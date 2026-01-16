@@ -1,0 +1,12 @@
+# Core dependencies
+pynput>=1.7.6
+pystray>=0.19.5
+Pillow>=10.0.0
+psutil>=5.9.0
+
+# Windows-specific (install on Windows only)
+# pywin32>=306
+# pywinselect @ git+https://github.com/offerrall/pywinselect
+
+# Linux-specific (optional, for DBus support)
+# dbus-python>=1.3.2

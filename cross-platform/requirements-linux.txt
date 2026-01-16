@@ -1,0 +1,3 @@
+# Linux-specific dependencies
+-r requirements.txt
+# dbus-python>=1.3.2  # Optional, for enhanced Dolphin support

@@ -1,0 +1,4 @@
+# Windows-specific dependencies
+-r requirements.txt
+pywin32>=306
+pywinselect @ git+https://github.com/offerrall/pywinselect

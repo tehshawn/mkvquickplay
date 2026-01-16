@@ -52,8 +52,27 @@ class HotkeyManager {
         }
     }
 
+    private func showEventTapFailedAlert() {
+        DispatchQueue.main.async {
+            let alert = NSAlert()
+            alert.messageText = "Hotkey Detection Failed"
+            alert.informativeText = "Could not start hotkey detection (Control+Space).\n\nThis may happen if:\n1. Accessibility permission was not granted\n2. The app needs to be re-authorized\n\nTry these steps:\n1. Open System Settings > Privacy & Security > Accessibility\n2. Remove MKV QuickPlay from the list\n3. Quit and relaunch MKV QuickPlay\n4. Grant permission when prompted"
+            alert.alertStyle = .critical
+            alert.addButton(withTitle: "Open System Settings")
+            alert.addButton(withTitle: "OK")
+
+            if alert.runModal() == .alertFirstButtonReturn {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+        }
+    }
+
     func start() {
         guard eventTap == nil else { return }
+
+        NSLog("[MKVQuickPlay] Starting hotkey manager...")
 
         let eventMask: CGEventMask = (1 << CGEventType.keyDown.rawValue)
 
@@ -73,6 +92,12 @@ class HotkeyManager {
             callback: callback,
             userInfo: refcon
         ) else {
+            NSLog("[MKVQuickPlay] ERROR: Failed to create event tap!")
+            NSLog("[MKVQuickPlay] This may be due to:")
+            NSLog("[MKVQuickPlay] 1. Accessibility permission not granted")
+            NSLog("[MKVQuickPlay] 2. App not properly signed/authorized for this Mac")
+            NSLog("[MKVQuickPlay] Please check System Settings > Privacy & Security > Accessibility")
+            showEventTapFailedAlert()
             return
         }
 
@@ -80,6 +105,7 @@ class HotkeyManager {
         runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+        NSLog("[MKVQuickPlay] Event tap created successfully - hotkeys active")
     }
 
     func stop() {
