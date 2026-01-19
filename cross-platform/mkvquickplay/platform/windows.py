@@ -59,9 +59,20 @@ class WindowsSelectionManager(SelectionManager):
             return []
 
         try:
-            # pywinselect.get_selected returns list of selected file paths
-            selected = get_selected(filter_type="files")
-            return list(selected) if selected else []
+            # pywinselect uses COM, which needs to be initialized on this thread
+            import pythoncom
+            pythoncom.CoInitialize()
+
+            try:
+                # pywinselect.get_selected returns list of selected file paths
+                selected = get_selected()
+                if not selected:
+                    return []
+                # Filter to only include files (not folders)
+                import os
+                return [s for s in selected if os.path.isfile(s)]
+            finally:
+                pythoncom.CoUninitialize()
 
         except Exception as e:
             print(f"Error getting Explorer selection: {e}")
@@ -69,9 +80,9 @@ class WindowsSelectionManager(SelectionManager):
 
     def get_selected_file(self) -> Optional[str]:
         """Get the first selected video file from Windows Explorer."""
-        if not self.is_file_manager_active():
-            return None
-
+        # Note: We skip the is_file_manager_active check because by the time
+        # the hotkey callback runs, focus may have shifted away from Explorer.
+        # pywinselect can still get selections from non-focused Explorer windows.
         selected_files = self.get_selected_files()
 
         # Find first video file in selection

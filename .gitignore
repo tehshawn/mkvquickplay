@@ -30,6 +30,9 @@ generate_icon.py
 
 # Release artifacts (uploaded separately)
 *.app.zip
+*.zip
+MKVQuickPlay*/
+CertificateSigningRequest.certSigningRequest
 
 # Python
 __pycache__/
