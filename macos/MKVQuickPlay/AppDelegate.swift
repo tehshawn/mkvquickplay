@@ -14,7 +14,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var justClosed = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSLog("[MKVQuickPlay] App launched")
+        NSLog("[MKVQuickPlay] App launched - version 1.1.1")
 
         // Initialize components
         statusBarController = StatusBarController()

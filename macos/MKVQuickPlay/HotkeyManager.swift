@@ -72,7 +72,11 @@ class HotkeyManager {
     func start() {
         guard eventTap == nil else { return }
 
-        NSLog("[MKVQuickPlay] Starting hotkey manager...")
+        // Check accessibility permission
+        let trusted = AXIsProcessTrusted()
+        if !trusted {
+            NSLog("[MKVQuickPlay] WARNING: Process is NOT trusted for accessibility")
+        }
 
         let eventMask: CGEventMask = (1 << CGEventType.keyDown.rawValue)
 
@@ -92,20 +96,22 @@ class HotkeyManager {
             callback: callback,
             userInfo: refcon
         ) else {
-            NSLog("[MKVQuickPlay] ERROR: Failed to create event tap!")
-            NSLog("[MKVQuickPlay] This may be due to:")
-            NSLog("[MKVQuickPlay] 1. Accessibility permission not granted")
-            NSLog("[MKVQuickPlay] 2. App not properly signed/authorized for this Mac")
-            NSLog("[MKVQuickPlay] Please check System Settings > Privacy & Security > Accessibility")
+            NSLog("[MKVQuickPlay] ERROR: Failed to create event tap - check Accessibility permissions")
             showEventTapFailedAlert()
             return
         }
 
         eventTap = tap
         runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+
+        if runLoopSource == nil {
+            NSLog("[MKVQuickPlay] ERROR: Failed to create run loop source")
+            return
+        }
+
         CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
-        NSLog("[MKVQuickPlay] Event tap created successfully - hotkeys active")
+        NSLog("[MKVQuickPlay] Event tap ENABLED")
     }
 
     func stop() {
