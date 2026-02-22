@@ -1,14 +1,16 @@
 # MKV QuickPlay
 
-A lightweight macOS menu bar app for quick video preview using mpv. Select a video file in Finder and press **Control+Space** to instantly preview it.
+A lightweight macOS menu bar app for quick video preview using mpv. Select a video file in Finder and press **Cmd+Shift+V** to instantly preview it.
 
 ## Features
 
-- **Instant Preview**: Press `Control+Space` to preview the selected video in Finder
+- **Instant Preview**: Press `Cmd+Shift+V` to preview the selected video in Finder
 - **Quick Navigation**: Use `Up/Down` arrow keys to jump between videos in the same folder
-- **Toggle Playback**: Press `Control+Space` again to close, or press `Escape`
+- **Toggle Playback**: Press the shortcut again to close, or press `Escape`
+- **Zero Permissions**: Uses macOS Services — no Accessibility or Automation permissions needed
 - **Minimal UI**: Runs quietly in the menu bar with no Dock icon
 - **Native Performance**: Uses mpv for fast, high-quality video playback
+- **Open With Support**: Right-click any video file > Open With > MKV QuickPlay
 
 ## Requirements
 
@@ -25,9 +27,7 @@ brew install mpv
 
 ## Installation
 
-### Option 1: Build from Source (Recommended)
-
-Due to macOS security restrictions, the app must be built locally to work properly. Pre-built releases may not be able to detect hotkeys on your Mac.
+### Build from Source
 
 **Requirements**: Xcode (free from App Store) and Command Line Tools
 
@@ -47,65 +47,48 @@ cp -R ~/Library/Developer/Xcode/DerivedData/MKVQuickPlay-*/Build/Products/Releas
 open /Applications/MKVQuickPlay.app
 ```
 
-### Option 2: Download Release (May Not Work)
-
-> **Note**: Pre-built releases may show "Hotkey Detection Failed" on macOS 26+ due to stricter security requirements for unsigned apps. If this happens, use Option 1 instead.
-
-1. Download the latest `MKVQuickPlay.app.zip` from [Releases](../../releases)
-2. Unzip and move `MKVQuickPlay.app` to `/Applications`
-3. Launch the app
-4. Grant **Accessibility** permission when prompted
-
 ## Usage
 
 1. Launch **MKV QuickPlay** (it appears in your menu bar)
-2. In **Finder**, select a video file (MKV, AVI, WebM, MP4, M4V, or MOV)
-3. Press `Control+Space` to preview
+2. In **Finder**, select a video file
+3. Press `Cmd+Shift+V` to preview (or use Finder > Services > Preview with MKVQuickPlay)
 4. Use `Up/Down` arrows to navigate to previous/next video
-5. Press `Escape` or `Control+Space` to close
+5. Press `Escape` or `Q` to close
 
 ## Keyboard Shortcuts
 
 | Shortcut | Action |
 |----------|--------|
-| `Control+Space` | Open/close video preview |
-| `Up Arrow` | Previous video in folder |
+| `Cmd+Shift+V` | Preview selected video |
 | `Down Arrow` | Next video in folder |
-| `Escape` | Close preview |
+| `Up Arrow` | Previous video in folder |
+| `Space` | Pause/Resume |
+| `Left/Right Arrow` | Seek backward/forward |
+| `Escape` or `Q` | Close preview |
+| `M` | Toggle mute |
+| `F` | Toggle fullscreen |
 
-## Permissions
+### Customizing the Shortcut
 
-MKV QuickPlay requires two permissions:
-
-1. **Accessibility**: For detecting global hotkeys (Control+Space). Grant via:
-   - System Settings > Privacy & Security > Accessibility
-
-2. **Automation**: For querying Finder selection. Grant when prompted on first use.
+You can change the keyboard shortcut in:
+System Settings > Keyboard > Keyboard Shortcuts > Services
 
 ## Supported Formats
 
-- MKV (Matroska Video)
-- AVI
-- WebM
-- MP4
-- M4V
-- MOV
+MKV, AVI, WebM, MP4, M4V, MOV, WMV, FLV, TS, MTS, M2TS
 
 ## Troubleshooting
 
-### "Hotkey Detection Failed" alert
-This happens on macOS 26+ when running a pre-built (unsigned) app. **Solution**: Build from source using Option 1 above. When you build locally, macOS trusts the app.
+### Service not appearing in Finder menu
+1. Quit and relaunch MKV QuickPlay
+2. Run `/System/Library/CoreServices/pbs -flush` in Terminal, then relaunch the app
+3. If still missing, log out and back in to refresh the services cache
 
 ### "mpv not found" alert
 Install mpv using `brew install mpv`
 
-### Hotkey not working (no alert)
-1. Check that Accessibility permission is granted in System Settings > Privacy & Security > Accessibility
-2. Try removing MKV QuickPlay from the Accessibility list, quit the app, relaunch, and grant permission again
-3. Ensure Finder is the active application when pressing the hotkey
-
 ### No video plays
-Make sure a supported video file is selected in Finder (not just highlighted in a preview pane)
+Make sure a video file is selected (clicked) in Finder before pressing the shortcut
 
 ## License
 
@@ -114,4 +97,3 @@ MIT License - feel free to use, modify, and distribute.
 ## Credits
 
 - Uses [mpv](https://mpv.io/) for video playback
-- Icon inspired by VLC media player
