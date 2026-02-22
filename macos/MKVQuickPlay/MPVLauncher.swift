@@ -7,10 +7,14 @@ class MPVLauncher {
 
     private var mpvProcess: Process?
     private var currentFile: URL?
+    private var inputConfPath: String?
 
-    var onClose: (() -> Void)?
+    /// Callback when mpv closes. Exit code: 0 = normal close, 2 = next video, 3 = previous video
+    var onClose: ((Int32) -> Void)?
 
-    private init() {}
+    private init() {
+        inputConfPath = createInputConf()
+    }
 
     private func findMPV() -> String? {
         let paths = [
@@ -27,6 +31,27 @@ class MPVLauncher {
         return nil
     }
 
+    /// Create a custom mpv input.conf for navigation via exit codes
+    private func createInputConf() -> String {
+        let tempDir = NSTemporaryDirectory()
+        let path = (tempDir as NSString).appendingPathComponent("mkvquickplay-input.conf")
+
+        let config = """
+        DOWN quit 2
+        UP quit 3
+        ESC quit 0
+        q quit 0
+        SPACE cycle pause
+        LEFT seek -5
+        RIGHT seek 5
+        m cycle mute
+        f cycle fullscreen
+        """
+
+        try? config.write(toFile: path, atomically: true, encoding: .utf8)
+        return path
+    }
+
     func play(url: URL) {
         stop()
 
@@ -39,7 +64,8 @@ class MPVLauncher {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: mpvPath)
-        process.arguments = [
+
+        var args = [
             "--hwdec=auto",
             "--keep-open=yes",
             "--osc=yes",
@@ -48,10 +74,16 @@ class MPVLauncher {
             "--auto-window-resize=yes",
             "--title=\(url.lastPathComponent)",
             "--force-window=immediate",
-            "--input-default-bindings=no",
-            "--input-vo-keyboard=no",
-            url.path
+            "--no-input-default-bindings",
+            "--input-vo-keyboard=yes",
         ]
+
+        if let confPath = inputConfPath {
+            args.append("--input-conf=\(confPath)")
+        }
+
+        args.append(url.path)
+        process.arguments = args
 
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
@@ -59,9 +91,10 @@ class MPVLauncher {
         process.terminationHandler = { [weak self] proc in
             DispatchQueue.main.async {
                 if self?.mpvProcess?.processIdentifier == proc.processIdentifier {
+                    let exitCode = proc.terminationStatus
                     self?.mpvProcess = nil
                     self?.currentFile = nil
-                    self?.onClose?()
+                    self?.onClose?(exitCode)
                 }
             }
         }

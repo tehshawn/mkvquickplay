@@ -5,7 +5,7 @@ class StatusBarController {
 
     private var statusItem: NSStatusItem?
 
-    var onPreviewSelected: (() -> Void)?
+    var onHelpRequested: (() -> Void)?
 
     init() {
         setupStatusItem()
@@ -19,7 +19,7 @@ class StatusBarController {
                 image.isTemplate = true
                 button.image = image
             }
-            button.toolTip = "MKV QuickPlay - Control+Space to preview"
+            button.toolTip = "MKV QuickPlay - Cmd+Shift+V to preview"
         }
 
         statusItem?.menu = createMenu()
@@ -28,20 +28,19 @@ class StatusBarController {
     private func createMenu() -> NSMenu {
         let menu = NSMenu()
 
-        let hotkeyItem = NSMenuItem(title: "Control+Space to preview video", action: nil, keyEquivalent: "")
+        let hotkeyItem = NSMenuItem(title: "Select video in Finder, press Cmd+Shift+V", action: nil, keyEquivalent: "")
         hotkeyItem.isEnabled = false
         menu.addItem(hotkeyItem)
 
-        let navItem = NSMenuItem(title: "Up/Down arrows to navigate", action: nil, keyEquivalent: "")
+        let navItem = NSMenuItem(title: "Up/Down to navigate, Esc to close", action: nil, keyEquivalent: "")
         navItem.isEnabled = false
         menu.addItem(navItem)
 
         menu.addItem(NSMenuItem.separator())
 
-        let previewItem = NSMenuItem(title: "Preview Selected Video", action: #selector(previewSelectedAction), keyEquivalent: " ")
-        previewItem.keyEquivalentModifierMask = .control
-        previewItem.target = self
-        menu.addItem(previewItem)
+        let helpItem = NSMenuItem(title: "How to Use...", action: #selector(showHelpAction), keyEquivalent: "")
+        helpItem.target = self
+        menu.addItem(helpItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -58,8 +57,8 @@ class StatusBarController {
         return menu
     }
 
-    @objc private func previewSelectedAction() {
-        onPreviewSelected?()
+    @objc private func showHelpAction() {
+        onHelpRequested?()
     }
 
     @objc private func showAbout() {
@@ -68,7 +67,7 @@ class StatusBarController {
         alert.informativeText = """
         Quick video preview for macOS.
 
-        Control+Space: Preview selected video
+        Cmd+Shift+V: Preview selected video
         Up/Down arrows: Navigate videos
         Escape: Close preview
 
