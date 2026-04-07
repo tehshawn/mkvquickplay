@@ -57,3 +57,6 @@ wheels/
 *.egg
 venv/
 .venv/
+
+# Separate repo — lives at tehshawn/videoduplicatefinder
+videoduplicatefinder/
