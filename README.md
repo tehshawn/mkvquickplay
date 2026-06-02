@@ -31,6 +31,14 @@ brew install mpv
 
 ## Installation
 
+### Download (recommended)
+
+Grab the latest **notarized** build from the [Releases page](https://github.com/tehshawn/mkvquickplay/releases/latest):
+
+1. Download `MKVQuickPlay-macOS-vX.Y.Z.zip` and unzip it.
+2. Move **MKVQuickPlay.app** to your `/Applications` folder.
+3. Open it — because the app is signed with a Developer ID and notarized by Apple, it launches without Gatekeeper warnings.
+
 ### Build from Source
 
 **Requirements**: Xcode (free from App Store) and Command Line Tools
