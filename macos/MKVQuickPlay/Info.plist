@@ -19,13 +19,15 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.0.0</string>
+    <string>2.3.0</string>
     <key>CFBundleVersion</key>
-    <string>4</string>
+    <string>8</string>
     <key>LSMinimumSystemVersion</key>
     <string>$(MACOSX_DEPLOYMENT_TARGET)</string>
     <key>LSUIElement</key>
     <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>MKV QuickPlay asks Finder for the order of videos in the current folder so it can step through them in the same order you see.</string>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2025. All rights reserved.</string>
     <key>NSPrincipalClass</key>

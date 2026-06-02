@@ -1,14 +1,18 @@
 # MKV QuickPlay
 
-A lightweight macOS menu bar app for quick video preview using mpv. Select a video file in Finder and press **Cmd+Shift+V** to instantly preview it.
+A lightweight macOS menu bar app for quick video preview using mpv. Select a video file in Finder and press **Cmd+Shift+V** to instantly preview it — then step through the folder, cull files to the Trash, and undo, all from the keyboard, QuickLook-style.
 
 ## Features
 
 - **Instant Preview**: Press `Cmd+Shift+V` to preview the selected video in Finder
-- **Quick Navigation**: Use `Up/Down` arrow keys to jump between videos in the same folder
+- **Native Resolution**: Videos open at their original dimensions (only large videos are scaled down to fit the screen)
+- **Quick Navigation**: Use `Up/Down` arrow keys to step through videos in the same order Finder displays them (any sort — Name, Kind, Date, Size, or manual) — the Finder selection follows along, and navigation stops at the first/last file (QuickLook-style, no wrap-around)
+- **Selection-Scoped**: Select several videos in Finder and the arrows cycle only that selection; select one and they walk the whole folder. A `N / total` indicator shows your position.
+- **Cull Quickly**: Optionally enable *Move to Trash with Delete Key* in the menu to weed through footage — `Delete` trashes the current video and jumps to the next.
+- **Remembers Volume**: Your last volume and mute setting carry over between videos and launches.
 - **Toggle Playback**: Press the shortcut again to close, or press `Escape`
-- **Zero Permissions**: Uses macOS Services — no Accessibility or Automation permissions needed
-- **Minimal UI**: Runs quietly in the menu bar with no Dock icon
+- **Minimal Permissions**: Uses macOS Services for previewing — no permissions needed. The first time you navigate a folder, macOS asks for permission to control Finder (used only to read the current sort order); decline it and navigation falls back to alphabetical order.
+- **Minimal UI**: Runs quietly in the menu bar with no Dock icon; optional *Launch at Login*
 - **Native Performance**: Uses mpv for fast, high-quality video playback
 - **Open With Support**: Right-click any video file > Open With > MKV QuickPlay
 
@@ -60,8 +64,9 @@ open /Applications/MKVQuickPlay.app
 | Shortcut | Action |
 |----------|--------|
 | `Cmd+Shift+V` | Preview selected video |
-| `Down Arrow` | Next video in folder |
-| `Up Arrow` | Previous video in folder |
+| `Down Arrow` | Next video |
+| `Up Arrow` | Previous video |
+| `Delete` | Move to Trash and advance (when enabled in menu) |
 | `Space` | Pause/Resume |
 | `Left/Right Arrow` | Seek backward/forward |
 | `Escape` or `Q` | Close preview |
