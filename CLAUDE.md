@@ -31,6 +31,9 @@ Steps for each release:
    ```
 
 The release tag/version comes from `Info.plist`, so step 2 drives everything.
+`release.sh` also runs `scripts/update-cask.sh`, which bumps the Homebrew cask
+(version + sha256) in the `tehshawn/homebrew-tap` repo so
+`brew install --cask tehshawn/tap/mkvquickplay` stays current.
 
 ### One-time setup (already configured certs aside)
 

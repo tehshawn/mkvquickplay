@@ -84,6 +84,9 @@ if [[ "$PUBLISH" -eq 1 ]]; then
       --title "MKV QuickPlay $TAG" --notes "See CHANGELOG.md for details." --latest
   fi
   echo "==> Published: https://github.com/$REPO_SLUG/releases/tag/$TAG"
+
+  echo "==> Updating Homebrew cask"
+  "$ROOT/scripts/update-cask.sh" || echo "    (cask update skipped/failed — update tehshawn/homebrew-tap manually)"
 else
   echo "==> --no-publish: skipped GitHub upload"
 fi

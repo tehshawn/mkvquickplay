@@ -31,7 +31,19 @@ brew install mpv
 
 ## Installation
 
-### Download (recommended)
+### Homebrew (recommended)
+
+```bash
+brew install --cask tehshawn/tap/mkvquickplay
+```
+
+This installs the notarized app and its `mpv` dependency automatically. Update later with:
+
+```bash
+brew upgrade --cask mkvquickplay
+```
+
+### Download
 
 Grab the latest **notarized** build from the [Releases page](https://github.com/tehshawn/mkvquickplay/releases/latest):
 
