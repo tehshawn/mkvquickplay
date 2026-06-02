@@ -1,6 +1,24 @@
+<div align="center">
+
+<img src="docs/icon.png" width="120" alt="MKV QuickPlay icon">
+
 # MKV QuickPlay
 
-A lightweight macOS menu bar app for quick video preview using mpv. Select a video file in Finder and press **Cmd+Shift+V** to instantly preview it — then step through the folder, cull files to the Trash, and undo, all from the keyboard, QuickLook-style.
+**QuickLook-style instant video preview for macOS, powered by mpv.**
+
+[![Latest release](https://img.shields.io/github/v/release/tehshawn/mkvquickplay)](https://github.com/tehshawn/mkvquickplay/releases/latest)
+![macOS 13+](https://img.shields.io/badge/macOS-13%2B-blue)
+![Developer ID notarized](https://img.shields.io/badge/Developer%20ID-notarized-success)
+[![License: MIT](https://img.shields.io/github/license/tehshawn/mkvquickplay)](LICENSE)
+
+<!-- Add a screen recording at docs/demo.gif to show it off here. -->
+<img src="docs/demo.gif" width="700" alt="MKV QuickPlay demo">
+
+</div>
+
+## Why?
+
+macOS QuickLook can't preview **MKV** and many other video formats. MKV QuickPlay fills that gap: select a video in Finder, press **Cmd+Shift+V**, and it opens instantly in an mpv window. Arrow through the folder in Finder's sort order, send junk clips to the Trash, and undo — all from the keyboard. It's the fast way to triage a folder full of video.
 
 ## Features
 
