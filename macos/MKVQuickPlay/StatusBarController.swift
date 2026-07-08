@@ -1,8 +1,9 @@
 import Cocoa
+import KeyboardShortcuts
 import ServiceManagement
 
 /// Manages the menu bar status item
-class StatusBarController {
+class StatusBarController: NSObject, NSMenuDelegate {
 
     private var statusItem: NSStatusItem?
     private var nowPlayingItem: NSMenuItem?
@@ -11,10 +12,12 @@ class StatusBarController {
     private var loginItem: NSMenuItem?
 
     private var undoItem: NSMenuItem?
+    private var updateAvailableItem: NSMenuItem?
 
     var onHelpRequested: (() -> Void)?
     var onRevealRequested: (() -> Void)?
     var onUndoRequested: (() -> Void)?
+    var onCheckForUpdates: (() -> Void)?
 
     private let trashEnabledKey = "mkvqp.trashEnabled"
 
@@ -23,8 +26,17 @@ class StatusBarController {
         UserDefaults.standard.bool(forKey: trashEnabledKey)
     }
 
-    init() {
+    override init() {
+        super.init()
         setupStatusItem()
+    }
+
+    /// Refresh stateful items each time the menu opens — Launch at Login can
+    /// be toggled behind our back in System Settings, and the checkmark must
+    /// reflect reality or the toggle acts opposite to its label.
+    func menuWillOpen(_ menu: NSMenu) {
+        loginItem?.state = (SMAppService.mainApp.status == .enabled) ? .on : .off
+        trashItem?.state = isTrashEnabled ? .on : .off
     }
 
     private func setupStatusItem() {
@@ -44,6 +56,15 @@ class StatusBarController {
     private func createMenu() -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
+        menu.delegate = self
+
+        // Hidden until Sparkle finds a scheduled update (gentle reminder for
+        // a Dock-less app whose update alerts would otherwise appear unseen).
+        let updateAvail = NSMenuItem(title: "Update Available…", action: #selector(checkForUpdatesAction), keyEquivalent: "")
+        updateAvail.target = self
+        updateAvail.isHidden = true
+        menu.addItem(updateAvail)
+        updateAvailableItem = updateAvail
 
         let hotkeyItem = NSMenuItem(title: "Select video in Finder, press Cmd+Shift+V", action: nil, keyEquivalent: "")
         hotkeyItem.isEnabled = false
@@ -74,8 +95,10 @@ class StatusBarController {
         menu.addItem(trash)
         trashItem = trash
 
-        let undo = NSMenuItem(title: "Undo Move to Trash", action: #selector(undoAction), keyEquivalent: "z")
-        undo.keyEquivalentModifierMask = [.command]
+        // No keyEquivalent: a status-menu shortcut only fires while the menu
+        // is open, so showing "⌘Z" would falsely advertise a global shortcut.
+        // (Cmd+Z works inside the mpv window via the input.conf binding.)
+        let undo = NSMenuItem(title: "Undo Move to Trash", action: #selector(undoAction), keyEquivalent: "")
         undo.target = self
         undo.isEnabled = false
         menu.addItem(undo)
@@ -87,7 +110,15 @@ class StatusBarController {
         menu.addItem(login)
         loginItem = login
 
+        let shortcutItem = NSMenuItem(title: "Set Keyboard Shortcut…", action: #selector(setShortcutAction), keyEquivalent: "")
+        shortcutItem.target = self
+        menu.addItem(shortcutItem)
+
         menu.addItem(NSMenuItem.separator())
+
+        let updatesItem = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdatesAction), keyEquivalent: "")
+        updatesItem.target = self
+        menu.addItem(updatesItem)
 
         let helpItem = NSMenuItem(title: "How to Use...", action: #selector(showHelpAction), keyEquivalent: "")
         helpItem.target = self
@@ -114,6 +145,43 @@ class StatusBarController {
 
     @objc private func undoAction() {
         onUndoRequested?()
+    }
+
+    @objc private func checkForUpdatesAction() {
+        onCheckForUpdates?()
+    }
+
+    /// Lightweight shortcut recorder: an alert hosting the KeyboardShortcuts
+    /// recorder field — no settings window needed for a one-setting app.
+    @objc private func setShortcutAction() {
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+
+        let recorder = KeyboardShortcuts.RecorderCocoa(for: .previewSelectedVideo)
+        recorder.frame = NSRect(x: 0, y: 0, width: 180, height: 26)
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 220, height: 32))
+        recorder.setFrameOrigin(NSPoint(x: 20, y: 3))
+        container.addSubview(recorder)
+
+        let alert = NSAlert()
+        alert.messageText = "Preview Shortcut"
+        alert.informativeText = "Press the key combination to use for previewing the selected Finder video. Click the ✕ in the field to clear it."
+        alert.accessoryView = container
+        alert.addButton(withTitle: "Done")
+        alert.window.level = .floating
+
+        // Don't let the still-armed global hotkey fire mid-dialog, and give
+        // the recorder key focus. The focus hop must be async: RecorderCocoa
+        // blocks becoming key until the next main-queue turn.
+        KeyboardShortcuts.disable(.previewSelectedVideo)
+        DispatchQueue.main.async { [weak alert] in
+            alert?.window.makeFirstResponder(recorder)
+        }
+        alert.runModal()
+        KeyboardShortcuts.enable(.previewSelectedVideo)
     }
 
     /// Enable/label the Undo item based on the most recently trashed file.
@@ -174,6 +242,7 @@ class StatusBarController {
 
         Cmd+Shift+V: Preview selected video
         Up/Down arrows: Navigate videos
+        P: Toggle Purple tag
         Delete: Move to Trash (when enabled)
         Escape: Close preview
 
@@ -190,6 +259,16 @@ class StatusBarController {
 
     func setActive(_ active: Bool) {
         statusItem?.button?.contentTintColor = active ? .systemBlue : nil
+    }
+
+    /// Show/hide the gentle "Update Available…" reminder in the menu.
+    func setUpdateAvailable(_ version: String?) {
+        if let version = version {
+            updateAvailableItem?.title = "Update Available (\(version))…"
+            updateAvailableItem?.isHidden = false
+        } else {
+            updateAvailableItem?.isHidden = true
+        }
     }
 
     /// Update the "now playing" line and enable/disable "Reveal in Finder".

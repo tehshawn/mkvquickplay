@@ -12,6 +12,8 @@
 		A1000007211111110000001 /* MPVLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000008211111110000001 /* MPVLauncher.swift */; };
 		A1000009211111110000001 /* FinderSelectionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000A211111110000001 /* FinderSelectionManager.swift */; };
 		A100000B211111110000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A100000C211111110000001 /* Assets.xcassets */; };
+		A1000024211111110000001 /* KeyboardShortcuts in Frameworks */ = {isa = PBXBuildFile; productRef = A1000022211111110000001 /* KeyboardShortcuts */; };
+		A1000025211111110000001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A1000023211111110000001 /* Sparkle */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -30,6 +32,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A1000024211111110000001 /* KeyboardShortcuts in Frameworks */,
+				A1000025211111110000001 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -82,6 +86,10 @@
 			dependencies = (
 			);
 			name = MKVQuickPlay;
+			packageProductDependencies = (
+				A1000022211111110000001 /* KeyboardShortcuts */,
+				A1000023211111110000001 /* Sparkle */,
+			);
 			productName = MKVQuickPlay;
 			productReference = A100000F211111110000001 /* MKVQuickPlay.app */;
 			productType = "com.apple.product-type.application";
@@ -110,6 +118,10 @@
 				Base,
 			);
 			mainGroup = A1000011211111110000001;
+			packageReferences = (
+				A1000020211111110000001 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */,
+				A1000021211111110000001 /* XCRemoteSwiftPackageReference "Sparkle" */,
+			);
 			productRefGroup = A1000013211111110000001 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -339,6 +351,38 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		A1000020211111110000001 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sindresorhus/KeyboardShortcuts";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.0.0;
+			};
+		};
+		A1000021211111110000001 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.6.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A1000022211111110000001 /* KeyboardShortcuts */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1000020211111110000001 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */;
+			productName = KeyboardShortcuts;
+		};
+		A1000023211111110000001 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1000021211111110000001 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = A1000018211111110000001 /* Project object */;
 }

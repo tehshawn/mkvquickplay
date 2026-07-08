@@ -18,11 +18,14 @@
 
 ## Why?
 
-macOS QuickLook can't preview **MKV** and many other video formats. MKV QuickPlay fills that gap: select a video in Finder, press **Cmd+Shift+V**, and it opens instantly in an mpv window. Arrow through the folder in Finder's sort order, send junk clips to the Trash, and undo — all from the keyboard. It's the fast way to triage a folder full of video.
+macOS QuickLook can't preview **MKV** and many other video formats — and Quick Look plugins only show you one file at a time. MKV QuickPlay is built for the folder: select a video in Finder, press **Cmd+Shift+V**, and it opens instantly in an mpv window. Arrow through the folder in Finder's sort order, send junk clips to the Trash, undo mistakes — all from the keyboard. Nothing else on macOS does keyboard-driven video culling.
+
+It pairs well with [QLVideo](https://github.com/Marginal/QLVideo) — use that for MKV *thumbnails* in Finder, and MKV QuickPlay for flying through and culling the folder.
 
 ## Features
 
-- **Instant Preview**: Press `Cmd+Shift+V` to preview the selected video in Finder
+- **Instant Preview**: Press `Cmd+Shift+V` to preview the selected video in Finder — a true global shortcut, recordable to any combo via the menu bar (*Set Keyboard Shortcut…*)
+- **Auto-Updates**: The app keeps itself current via Sparkle (or use `brew upgrade`)
 - **Native Resolution**: Videos open at their original dimensions (only large videos are scaled down to fit the screen)
 - **Quick Navigation**: Use `Up/Down` arrow keys to step through videos in the same order Finder displays them (any sort — Name, Kind, Date, Size, or manual) — the Finder selection follows along, and navigation stops at the first/last file (QuickLook-style, no wrap-around)
 - **Selection-Scoped**: Select several videos in Finder and the arrows cycle only that selection; select one and they walk the whole folder. A `N / total` indicator shows your position.
@@ -104,6 +107,7 @@ open /Applications/MKVQuickPlay.app
 | `Cmd+Shift+V` | Preview selected video |
 | `Down Arrow` | Next video |
 | `Up Arrow` | Previous video |
+| `P` | Toggle the Purple Finder tag (mark keepers while culling) |
 | `Delete` | Move to Trash and advance (when enabled in menu) |
 | `Space` | Pause/Resume |
 | `Left/Right Arrow` | Seek backward/forward |
@@ -113,8 +117,9 @@ open /Applications/MKVQuickPlay.app
 
 ### Customizing the Shortcut
 
-You can change the keyboard shortcut in:
-System Settings > Keyboard > Keyboard Shortcuts > Services
+Click the menu bar icon → **Set Keyboard Shortcut…** and press any combination.
+
+(The Finder Services entry also remains available under Finder > Services > Preview with MKVQuickPlay; its shortcut can be changed in System Settings > Keyboard > Keyboard Shortcuts > Services.)
 
 ## Supported Formats
 

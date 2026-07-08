@@ -2,8 +2,9 @@
 
 macOS-only menu bar app for quick video preview via mpv. Source lives in `macos/`.
 The app drives a single persistent mpv window over its JSON IPC socket
-(`/tmp/mkvquickplay.sock`); navigation / trash / undo keys are mpv
-`script-message`s delivered back as `client-message` IPC events.
+(`NSTemporaryDirectory()/mkvquickplay.sock` — the per-user temp dir under
+`/var/folders/...`, not world-readable `/tmp`); navigation / trash / undo keys
+are mpv `script-message`s delivered back as `client-message` IPC events.
 
 ## Building (dev)
 
@@ -31,9 +32,22 @@ Steps for each release:
    ```
 
 The release tag/version comes from `Info.plist`, so step 2 drives everything.
-`release.sh` also runs `scripts/update-cask.sh`, which bumps the Homebrew cask
-(version + sha256) in the `tehshawn/homebrew-tap` repo so
-`brew install --cask tehshawn/tap/mkvquickplay` stays current.
+IMPORTANT: bump `CFBundleVersion` too — Sparkle compares build numbers, so a
+release without a build-number bump will never be offered as an update.
+
+`release.sh` also:
+- generates and pushes the Sparkle appcast (`docs/appcast.xml`, served via
+  GitHub Pages at https://tehshawn.github.io/mkvquickplay/appcast.xml). The
+  zip is signed with `sign_update` using the EdDSA private key stored in the
+  login keychain (created once via Sparkle's `generate_keys`; public key lives
+  in Info.plist as `SUPublicEDKey`). Sparkle's CLI tools resolve from the
+  SwiftPM artifacts under DerivedData.
+- runs `scripts/update-cask.sh`, which bumps the Homebrew cask (version +
+  sha256, and ensures `auto_updates true`) in the `tehshawn/homebrew-tap` repo
+  so `brew install --cask tehshawn/tap/mkvquickplay` stays current.
+
+Dependencies (SwiftPM, declared in the Xcode project): `KeyboardShortcuts`
+(global recordable hotkey) and `Sparkle` (auto-updates).
 
 ### One-time setup (already configured certs aside)
 

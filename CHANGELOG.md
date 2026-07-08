@@ -2,6 +2,60 @@
 
 All notable changes to MKV QuickPlay are documented here.
 
+## [Unreleased]
+
+### Added
+- **Tag while culling** — press `P` during preview to toggle the Purple Finder
+  tag on the playing video (other tags are preserved); an on-screen overlay
+  confirms. Mark keepers without stopping playback.
+- **Global keyboard shortcut** (default `Cmd+Shift+V`) that works regardless of
+  the Services menu's mood — recordable to any combination via the menu bar's
+  *Set Keyboard Shortcut…*. The Finder Service remains as a zero-permission
+  fallback. The hotkey reads the current Finder selection and previews it
+  (pressing it with no video selected closes the open preview).
+- **Auto-updates via Sparkle** — the app checks a signed appcast (hosted on the
+  project's GitHub Pages) and can install updates in place. *Check for
+  Updates…* lives in the menu, and scheduled updates surface as a gentle
+  "Update Available…" menu item (a Dock-less app's update alerts would
+  otherwise appear behind other windows). The Homebrew cask gains
+  `auto_updates` one release later, so pre-Sparkle brew installs still get
+  this version via `brew upgrade`.
+
+### Fixed
+- Crash fix: a race between mpv exiting and an in-flight IPC command could kill
+  the entire app via an unhandled SIGPIPE. Writes now suppress SIGPIPE and a
+  failed write tears the channel down cleanly.
+- Descending sorts now match Finder exactly: the direction applies to the sort
+  key only, keeping Finder's name-ascending tiebreak (a Kind-sorted folder of
+  same-type files no longer flips to reverse-alphabetical).
+- Unmappable Finder sort columns (Date Added, Tags, …) now fall back to
+  alphabetical instead of applying the column's direction to the wrong key.
+  The Finder sort query now runs fully off the main thread (isolated
+  subprocess, bounded by timeouts) *after* playback starts — a busy Finder or
+  the one-time Automation consent prompt can no longer stall the app or delay
+  the video. Note: multi-file previews now start at the alphabetically first
+  file of the selection; the playlist adopts Finder's order a moment later.
+- Arrow-key navigation can no longer relaunch mpv right after the user closed
+  it (navigation now only ever loads into the live window).
+- Undo Move to Trash: restoring into a different folder no longer traps
+  navigation in a one-file playlist; an impossible undo (Trash emptied) is
+  dropped instead of wedging the undo stack.
+- Re-invoking the shortcut on a *different* selection that happens to include
+  the playing file now starts the new preview instead of toggling closed.
+- "Open With" now builds a proper navigation playlist (same path as the
+  Service) instead of leaving stale navigation state behind.
+- The mpv-not-found / launch-failure alerts now activate the app so they can't
+  appear behind other windows; menu-bar state is only set once mpv actually
+  launched.
+- Launch at Login checkmark refreshes when the menu opens (stays correct if
+  toggled in System Settings).
+- macOS 27 forward-compat: modern cooperative-activation API; IPC socket moved
+  to the per-user temp directory; MacPorts mpv path recognized.
+- Release tooling: refuses to release from a dirty/unpushed tree, refuses to
+  clobber an existing release without --force, tags the exact built commit,
+  archives dSYMs with each release, and verifies the Homebrew cask rewrite
+  actually took effect.
+
 ## [2.3.0]
 
 ### Added
