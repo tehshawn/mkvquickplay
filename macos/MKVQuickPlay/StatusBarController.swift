@@ -43,14 +43,48 @@ class StatusBarController: NSObject, NSMenuDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
 
         if let button = statusItem?.button {
-            if let image = NSImage(systemSymbolName: "play.rectangle.fill", accessibilityDescription: "MKV QuickPlay") {
-                image.isTemplate = true
-                button.image = image
-            }
+            button.image = Self.makeMenuBarIcon()
             button.toolTip = "MKV QuickPlay - Cmd+Shift+V to preview"
         }
 
         statusItem?.menu = createMenu()
+    }
+
+    /// Template-image version of the app's "stack" icon: a back card peeking
+    /// above a front card with a play triangle. Drawn at runtime so it stays
+    /// crisp at any scale and matches the app icon without shipping assets.
+    private static func makeMenuBarIcon() -> NSImage {
+        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: true) { _ in
+            NSColor.black.setStroke()
+            NSColor.black.setFill()
+
+            // Back card, clipped so only its top peeks above the front card.
+            NSGraphicsContext.current?.saveGraphicsState()
+            NSBezierPath(rect: NSRect(x: 0, y: 0, width: 18, height: 5.0)).addClip()
+            let stub = NSBezierPath(roundedRect: NSRect(x: 3.75, y: 2, width: 10.5, height: 8),
+                                    xRadius: 2, yRadius: 2)
+            stub.lineWidth = 1.5
+            stub.stroke()
+            NSGraphicsContext.current?.restoreGraphicsState()
+
+            // Front card.
+            let card = NSBezierPath(roundedRect: NSRect(x: 2, y: 5.5, width: 14, height: 11),
+                                    xRadius: 2.5, yRadius: 2.5)
+            card.lineWidth = 1.5
+            card.stroke()
+
+            // Play triangle.
+            let tri = NSBezierPath()
+            tri.move(to: NSPoint(x: 7.5, y: 8.5))
+            tri.line(to: NSPoint(x: 7.5, y: 13.5))
+            tri.line(to: NSPoint(x: 12, y: 11))
+            tri.close()
+            tri.fill()
+            return true
+        }
+        image.isTemplate = true
+        image.accessibilityDescription = "MKV QuickPlay"
+        return image
     }
 
     private func createMenu() -> NSMenu {
