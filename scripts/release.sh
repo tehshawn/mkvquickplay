@@ -43,11 +43,9 @@ EXPORT_OPTS="$ROOT/macos/ExportOptions.plist"
 BUILD="$ROOT/build/release"
 
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$PLIST")"
-BUILD_NUM="$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$PLIST")"
 TAG="v$VERSION"
 ZIP="$BUILD/$SCHEME-macOS-$TAG.zip"
 DSYM_ZIP="$BUILD/$SCHEME-$TAG-dSYMs.zip"
-APPCAST="$ROOT/docs/appcast.xml"
 
 # Publishing guards only — `--no-publish` stays usable mid-development to
 # test signing/notarization of work-in-progress.
@@ -127,40 +125,11 @@ if [[ "$PUBLISH" -eq 1 ]]; then
   "$ROOT/scripts/update-cask.sh" || echo "    (cask update skipped/failed — update tehshawn/homebrew-tap manually)"
 
   echo "==> Generating Sparkle appcast"
-  # Newest DerivedData first; `|| true` because a missed glob would otherwise
-  # abort the whole script under set -euo pipefail.
-  SPARKLE_BIN="$(ls -dt "$HOME"/Library/Developer/Xcode/DerivedData/$SCHEME-*/SourcePackages/artifacts/sparkle/Sparkle/bin 2>/dev/null | head -1 || true)"
-  # sign_update prints: sparkle:edSignature="…" length="…". Run it inside the
-  # condition so a failure (locked keychain, missing key) degrades to the
-  # warning below instead of killing the script mid-release.
-  if [[ -n "$SPARKLE_BIN" && -x "$SPARKLE_BIN/sign_update" ]] \
-     && SIGNATURE_ATTRS="$("$SPARKLE_BIN/sign_update" "$ZIP")"; then
-    PUB_DATE="$(date -u '+%a, %d %b %Y %H:%M:%S +0000')"
-    DOWNLOAD_URL="https://github.com/$REPO_SLUG/releases/download/$TAG/$(basename "$ZIP")"
-    cat > "$APPCAST" <<APPCAST_EOF
-<?xml version="1.0" encoding="utf-8"?>
-<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
-  <channel>
-    <title>MKV QuickPlay</title>
-    <item>
-      <title>MKV QuickPlay $VERSION</title>
-      <pubDate>$PUB_DATE</pubDate>
-      <sparkle:version>$BUILD_NUM</sparkle:version>
-      <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
-      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-      <sparkle:releaseNotesLink>https://github.com/$REPO_SLUG/releases/tag/$TAG</sparkle:releaseNotesLink>
-      <enclosure url="$DOWNLOAD_URL" $SIGNATURE_ATTRS type="application/octet-stream"/>
-    </item>
-  </channel>
-</rss>
-APPCAST_EOF
-    git add "$APPCAST"
-    git commit -qm "Appcast for $TAG"
-    git push -q
-    echo "    -> https://tehshawn.github.io/mkvquickplay/appcast.xml (live once Pages redeploys)"
-  else
+  # Signs the zip and embeds this version's CHANGELOG section as HTML notes.
+  # Failure-tolerant: a signing/keychain problem must not kill the release.
+  if ! "$ROOT/scripts/update-appcast.sh"; then
     echo "    WARNING: appcast not generated (Sparkle tools or EdDSA key unavailable)." >&2
-    echo "    In-app updates won't see $TAG. Fix the tools/keychain and re-run: scripts/release.sh --force" >&2
+    echo "    In-app updates won't see $TAG. Fix the tools/keychain and re-run: scripts/update-appcast.sh" >&2
   fi
 else
   echo "==> --no-publish: skipped GitHub upload"
