@@ -2,6 +2,16 @@
 
 All notable changes to MKV QuickPlay are documented here.
 
+## [2.4.1]
+
+### Changed
+- **New app icon** — a stack of video cards with a play triangle, reflecting
+  what the app is for: flying through a folder, not just playing a file. The
+  icon is generated code (`scripts/icongen.swift`), with a simplified variant
+  at small sizes for crisp Finder lists.
+- **Matching menu bar icon** — the status item now shows a miniature of the
+  stack motif as a proper template image (adapts to light/dark and tinting).
+
 ## [2.4.0]
 
 ### Added
