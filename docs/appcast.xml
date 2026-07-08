@@ -4,11 +4,19 @@
     <title>MKV QuickPlay</title>
     <item>
       <title>MKV QuickPlay 2.4.1</title>
-      <pubDate>Wed, 08 Jul 2026 22:41:20 +0000</pubDate>
+      <pubDate>Wed, 08 Jul 2026 22:53:20 +0000</pubDate>
       <sparkle:version>10</sparkle:version>
       <sparkle:shortVersionString>2.4.1</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-      <sparkle:releaseNotesLink>https://github.com/tehshawn/mkvquickplay/releases/tag/v2.4.1</sparkle:releaseNotesLink>
+      <description><![CDATA[
+        <h2>MKV QuickPlay 2.4.1</h2>
+        <h3>Changed</h3>
+<ul>
+<li><b>New app icon</b> — a stack of video cards with a play triangle, reflecting what the app is for: flying through a folder, not just playing a file. The icon is generated code (<code>scripts/icongen.swift</code>), with a simplified variant at small sizes for crisp Finder lists.</li>
+<li><b>Matching menu bar icon</b> — the status item now shows a miniature of the stack motif as a proper template image (adapts to light/dark and tinting).</li>
+</ul>
+        <p><a href="https://github.com/tehshawn/mkvquickplay/releases/tag/v2.4.1">Full release on GitHub</a></p>
+      ]]></description>
       <enclosure url="https://github.com/tehshawn/mkvquickplay/releases/download/v2.4.1/MKVQuickPlay-macOS-v2.4.1.zip" sparkle:edSignature="LFuf9TJfJKvXTeTJGpM8ITjye4O6T0fk2z03TRbgNe5JgsZKdFV4GfbpWCT8g7coBasmw4JwBEyLX27iUYsBCQ==" length="1665246" type="application/octet-stream"/>
     </item>
   </channel>
