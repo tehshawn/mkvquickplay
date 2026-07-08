@@ -2,7 +2,7 @@
 
 All notable changes to MKV QuickPlay are documented here.
 
-## [Unreleased]
+## [2.4.0]
 
 ### Added
 - **Tag while culling** — press `P` during preview to toggle the Purple Finder
