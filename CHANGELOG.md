@@ -2,6 +2,18 @@
 
 All notable changes to MKV QuickPlay are documented here.
 
+## [2.4.2]
+
+### Fixed
+- The navigation arrows, `Delete`, and the `P` tag key could go permanently
+  dead for an entire preview session if the app missed its single 3-second
+  window to attach to mpv's control channel (for example after a slow cold
+  start of mpv), or if the channel dropped mid-session. The connection now
+  keeps retrying for up to two minutes, self-heals within half a second if it
+  ever drops while the player is running, tolerates transient interruptions,
+  and uses a unique socket per session so overlapping player instances can't
+  interfere. Diagnostic logging added so any recurrence leaves evidence.
+
 ## [2.4.1]
 
 ### Changed

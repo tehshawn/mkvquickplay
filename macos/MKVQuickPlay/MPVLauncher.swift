@@ -12,9 +12,15 @@ final class MPVLauncher {
     static let shared = MPVLauncher()
 
     private enum Timing {
-        /// mpv needs a moment to create the IPC socket after launch.
-        static let connectRetries = 60
-        static let connectRetryInterval: useconds_t = 50_000 // 50ms × 60 ≈ 3s
+        /// mpv normally binds its IPC socket within ~100ms, so retry fast at
+        /// first — but a cold spawn (dyld cache miss after reboot, a waking
+        /// drive) can take far longer, so patrol slowly for up to ~2 minutes
+        /// instead of giving up. A missed connect used to permanently strand
+        /// the session without navigation/trash/tag keys.
+        static let fastRetries = 60
+        static let fastRetryInterval: TimeInterval = 0.05  // 60 × 50ms ≈ 3s
+        static let slowRetryInterval: TimeInterval = 0.5
+        static let maxRetries = 300                        // ≈ 3s fast + 120s slow
         /// Grace period after SIGTERM before escalating to SIGKILL — mpv can
         /// take several hundred ms to tear down the video pipeline cleanly.
         static let terminateGrace: TimeInterval = 1.0
@@ -27,7 +33,11 @@ final class MPVLauncher {
 
     // Per-user temp dir (not world-readable /tmp): keeps the mpv IPC socket
     // private to this user and avoids collisions between multiple logins.
-    private let socketPath = (NSTemporaryDirectory() as NSString).appendingPathComponent("mkvquickplay.sock")
+    // The path is unique per mpv launch so an old, still-dying player can
+    // never interfere with the new session's socket. Main-thread confined.
+    private let socketDir = NSTemporaryDirectory()
+    private var currentSocketPath = ""
+    private var launchCounter = 0
 
     // IPC state confined to ioQueue.
     private var socketFD: Int32 = -1
@@ -73,6 +83,13 @@ final class MPVLauncher {
         // mpv exits while a command is in flight.
         signal(SIGPIPE, SIG_IGN)
         inputConfPath = createInputConf()
+
+        // Sweep stale sockets left by crashed sessions (paths are per-launch).
+        if let items = try? FileManager.default.contentsOfDirectory(atPath: socketDir) {
+            for item in items where item.hasPrefix("mkvquickplay") && item.hasSuffix(".sock") {
+                unlink((socketDir as NSString).appendingPathComponent(item))
+            }
+        }
     }
 
     private func findMPV() -> String? {
@@ -158,7 +175,11 @@ final class MPVLauncher {
             return false
         }
 
-        // Clear any stale socket from a previous (crashed) session.
+        // Fresh socket path for this session.
+        launchCounter += 1
+        currentSocketPath = (socketDir as NSString)
+            .appendingPathComponent("mkvquickplay-\(ProcessInfo.processInfo.processIdentifier)-\(launchCounter).sock")
+        let socketPath = currentSocketPath
         unlink(socketPath)
 
         let process = Process()
@@ -216,7 +237,7 @@ final class MPVLauncher {
         do {
             try process.run()
             mpvProcess = process
-            connectSocket()
+            connectSocket(path: socketPath)
             return true
         } catch {
             showLaunchErrorAlert(error: error)
@@ -257,7 +278,7 @@ final class MPVLauncher {
 
     // MARK: - IPC
 
-    private func connectSocket() {
+    private func connectSocket(path: String) {
         stateLock.lock()
         generation += 1
         connected = false // a new session must never inherit a predecessor's flag
@@ -265,41 +286,69 @@ final class MPVLauncher {
         stateLock.unlock()
 
         ioQueue.async { [weak self] in
-            guard let self = self else { return }
-            for _ in 0..<Timing.connectRetries {
-                // A newer launch or a teardown supersedes this attempt.
-                self.stateLock.lock()
-                let stale = (self.generation != gen)
-                self.stateLock.unlock()
-                if stale { return }
-
-                if let fd = self.makeConnectedSocket() {
-                    self.stateLock.lock()
-                    let current = (self.generation == gen)
-                    if current { self.connected = true }
-                    self.stateLock.unlock()
-                    if !current {
-                        close(fd)
-                        return
-                    }
-                    // Replace any leftover source from a predecessor session
-                    // (its cancel handler closes the old fd).
-                    self.readSource?.cancel()
-                    self.readSource = nil
-                    self.socketFD = fd
-                    self.startReading(fd: fd, generation: gen)
-                    // Track volume / mute so we can persist them for next time.
-                    self.sendCommand(["observe_property", 1, "volume"])
-                    self.sendCommand(["observe_property", 2, "mute"])
-                    return
-                }
-                usleep(Timing.connectRetryInterval)
-            }
-            NSLog("[MKVQuickPlay] Could not connect to mpv IPC socket; navigation disabled this session")
+            self?.attemptConnect(path: path, generation: gen, attempt: 0)
         }
     }
 
-    private func makeConnectedSocket() -> Int32? {
+    /// ioQueue-confined, non-blocking retry chain: never occupies the queue
+    /// while waiting, and keeps trying long enough to ride out a slow mpv
+    /// cold start instead of stranding the session without keys.
+    private func attemptConnect(path: String, generation gen: Int, attempt: Int) {
+        // A newer launch or a teardown supersedes this attempt.
+        stateLock.lock()
+        let stale = (generation != gen)
+        stateLock.unlock()
+        if stale { return }
+
+        if let fd = makeConnectedSocket(path: path) {
+            stateLock.lock()
+            let current = (generation == gen)
+            if current { connected = true }
+            stateLock.unlock()
+            if !current {
+                close(fd)
+                return
+            }
+            // Replace any leftover source from a predecessor session
+            // (its cancel handler closes the old fd).
+            readSource?.cancel()
+            readSource = nil
+            socketFD = fd
+            startReading(fd: fd, generation: gen)
+            // Track volume / mute so we can persist them for next time.
+            sendCommand(["observe_property", 1, "volume"])
+            sendCommand(["observe_property", 2, "mute"])
+            if attempt >= Timing.fastRetries {
+                NSLog("[MKVQuickPlay] mpv IPC connected after slow start (attempt \(attempt))")
+            }
+            return
+        }
+
+        if attempt == Timing.fastRetries {
+            NSLog("[MKVQuickPlay] mpv IPC socket slow to appear — still retrying in the background")
+        }
+        guard attempt < Timing.maxRetries else {
+            NSLog("[MKVQuickPlay] Could not connect to mpv IPC socket; navigation keys unavailable this session")
+            return
+        }
+        let delay = attempt < Timing.fastRetries ? Timing.fastRetryInterval : Timing.slowRetryInterval
+        ioQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            self?.attemptConnect(path: path, generation: gen, attempt: attempt + 1)
+        }
+    }
+
+    /// A dropped channel while mpv is still running must self-heal — a
+    /// keyless preview session is otherwise stuck until the user happens to
+    /// re-invoke the service.
+    private func reconnectIfPlayerAlive() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.mpvProcess?.isRunning == true else { return }
+            NSLog("[MKVQuickPlay] IPC channel dropped while mpv is running — reconnecting")
+            self.connectSocket(path: self.currentSocketPath)
+        }
+    }
+
+    private func makeConnectedSocket(path: String) -> Int32? {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         if fd < 0 { return nil }
 
@@ -312,7 +361,7 @@ final class MPVLauncher {
         addr.sun_family = sa_family_t(AF_UNIX)
 
         let maxLen = MemoryLayout.size(ofValue: addr.sun_path)
-        let pathBytes = socketPath.utf8CString // includes trailing NUL
+        let pathBytes = path.utf8CString // includes trailing NUL
         if pathBytes.count > maxLen {
             close(fd)
             return nil
@@ -343,11 +392,20 @@ final class MPVLauncher {
             guard let self = self else { return }
             var buf = [UInt8](repeating: 0, count: 4096)
             let n = read(fd, &buf, buf.count)
-            if n <= 0 {
-                // EOF or error — mpv closed the socket. Scoped to this source's
-                // generation so a stale source can't tear down a successor.
-                // The process termination handler owns the onClose callback.
+            if n < 0 {
+                // A transient interruption must not kill the channel.
+                if errno == EINTR || errno == EAGAIN { return }
                 self.teardownSocket(ifGeneration: gen)
+                self.reconnectIfPlayerAlive()
+                return
+            }
+            if n == 0 {
+                // EOF — mpv closed the socket. Scoped to this source's
+                // generation so a stale source can't tear down a successor.
+                // The process termination handler owns the onClose callback;
+                // if mpv is somehow still alive, self-heal the channel.
+                self.teardownSocket(ifGeneration: gen)
+                self.reconnectIfPlayerAlive()
                 return
             }
             self.readBuffer.append(contentsOf: buf[0..<n])
@@ -441,13 +499,17 @@ final class MPVLauncher {
             guard let self = self, self.socketFD >= 0 else { return }
             guard var data = try? JSONSerialization.data(withJSONObject: ["command": command]) else { return }
             data.append(0x0A)
-            let written = data.withUnsafeBytes { raw -> Int in
-                write(self.socketFD, raw.baseAddress, raw.count)
-            }
+            var written = -1
+            repeat {
+                written = data.withUnsafeBytes { raw -> Int in
+                    write(self.socketFD, raw.baseAddress, raw.count)
+                }
+            } while written < 0 && errno == EINTR
             if written < 0 {
                 // Peer is gone (EPIPE, SIGPIPE suppressed) — drop the channel
-                // so isConnected turns false instead of silently eating commands.
+                // so isConnected turns false, and self-heal if mpv is alive.
                 self.teardownSocket()
+                self.reconnectIfPlayerAlive()
             }
         }
     }
