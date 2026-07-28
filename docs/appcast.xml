@@ -3,20 +3,21 @@
   <channel>
     <title>MKV QuickPlay</title>
     <item>
-      <title>MKV QuickPlay 2.4.2</title>
-      <pubDate>Tue, 28 Jul 2026 17:17:14 +0000</pubDate>
-      <sparkle:version>11</sparkle:version>
-      <sparkle:shortVersionString>2.4.2</sparkle:shortVersionString>
+      <title>MKV QuickPlay 2.5.0</title>
+      <pubDate>Tue, 28 Jul 2026 18:14:27 +0000</pubDate>
+      <sparkle:version>12</sparkle:version>
+      <sparkle:shortVersionString>2.5.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
       <description><![CDATA[
-        <h2>MKV QuickPlay 2.4.2</h2>
-        <h3>Fixed</h3>
+        <h2>MKV QuickPlay 2.5.0</h2>
+        <h3>Changed</h3>
 <ul>
-<li>The navigation arrows, <code>Delete</code>, and the <code>P</code> tag key could go permanently dead for an entire preview session if the app missed its single 3-second window to attach to mpv's control channel (for example after a slow cold start of mpv), or if the channel dropped mid-session. The connection now keeps retrying for up to two minutes, self-heals within half a second if it ever drops while the player is running, tolerates transient interruptions, and uses a unique socket per session so overlapping player instances can't interfere. Diagnostic logging added so any recurrence leaves evidence.</li>
+<li><b>Liquid Glass app icon</b> for macOS 26 Tahoe and macOS 27 Golden Gate: the stack icon is now a native layered icon with dynamic lighting and dark, clear, and tinted appearance variants — no more legacy gray-squircle boxing on modern systems. Older macOS versions keep the classic icon automatically. (The layered source lives at <code>macos/MKVQuickPlay/AppIcon.icon</code> and can be edited in Apple's Icon Composer.)</li>
+<li><b>More reliable player focus on macOS 26/27</b>: handing focus to the video window now uses the modern cooperative-activation hand-off, preventing the preview from occasionally opening behind other windows under the new focus-stealing protections.</li>
 </ul>
-        <p><a href="https://github.com/tehshawn/mkvquickplay/releases/tag/v2.4.2">Full release on GitHub</a></p>
+        <p><a href="https://github.com/tehshawn/mkvquickplay/releases/tag/v2.5.0">Full release on GitHub</a></p>
       ]]></description>
-      <enclosure url="https://github.com/tehshawn/mkvquickplay/releases/download/v2.4.2/MKVQuickPlay-macOS-v2.4.2.zip" sparkle:edSignature="byws2YzxwqpsC1Y923M9aYC04HY4iaZPD2XRi+8wgARUHmzEl0om+aHw8VfF28Hju5n5mTNaHM403srVqvcbBw==" length="1603243" type="application/octet-stream"/>
+      <enclosure url="https://github.com/tehshawn/mkvquickplay/releases/download/v2.5.0/MKVQuickPlay-macOS-v2.5.0.zip" sparkle:edSignature="3KCSibzM7onk2L3PFj0GZqFBezThPSiBgkOHMF8uQE4ISxqmZEhVRgd43+sxb03aOarr0M8Pmd8LHZ4O5WUaDw==" length="2707430" type="application/octet-stream"/>
     </item>
   </channel>
 </rss>
