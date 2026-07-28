@@ -2,6 +2,20 @@
 
 All notable changes to MKV QuickPlay are documented here.
 
+## [2.5.0]
+
+### Changed
+- **Liquid Glass app icon** for macOS 26 Tahoe and macOS 27 Golden Gate: the
+  stack icon is now a native layered icon with dynamic lighting and dark,
+  clear, and tinted appearance variants — no more legacy gray-squircle boxing
+  on modern systems. Older macOS versions keep the classic icon automatically.
+  (The layered source lives at `macos/MKVQuickPlay/AppIcon.icon` and can be
+  edited in Apple's Icon Composer.)
+- **More reliable player focus on macOS 26/27**: handing focus to the video
+  window now uses the modern cooperative-activation hand-off, preventing the
+  preview from occasionally opening behind other windows under the new
+  focus-stealing protections.
+
 ## [2.4.2]
 
 ### Fixed

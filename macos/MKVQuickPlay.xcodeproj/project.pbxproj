@@ -12,6 +12,7 @@
 		A1000007211111110000001 /* MPVLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000008211111110000001 /* MPVLauncher.swift */; };
 		A1000009211111110000001 /* FinderSelectionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000A211111110000001 /* FinderSelectionManager.swift */; };
 		A100000B211111110000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A100000C211111110000001 /* Assets.xcassets */; };
+		A1000026211111110000001 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = A1000027211111110000001 /* AppIcon.icon */; };
 		A1000024211111110000001 /* KeyboardShortcuts in Frameworks */ = {isa = PBXBuildFile; productRef = A1000022211111110000001 /* KeyboardShortcuts */; };
 		A1000025211111110000001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A1000023211111110000001 /* Sparkle */; };
 /* End PBXBuildFile section */
@@ -22,6 +23,7 @@
 		A1000008211111110000001 /* MPVLauncher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPVLauncher.swift; sourceTree = "<group>"; };
 		A100000A211111110000001 /* FinderSelectionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FinderSelectionManager.swift; sourceTree = "<group>"; };
 		A100000C211111110000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A1000027211111110000001 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		A100000D211111110000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A100000E211111110000001 /* MKVQuickPlay.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MKVQuickPlay.entitlements; sourceTree = "<group>"; };
 		A100000F211111110000001 /* MKVQuickPlay.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MKVQuickPlay.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -55,6 +57,7 @@
 				A1000004211111110000001 /* StatusBarController.swift */,
 				A1000008211111110000001 /* MPVLauncher.swift */,
 				A100000A211111110000001 /* FinderSelectionManager.swift */,
+				A1000027211111110000001 /* AppIcon.icon */,
 				A100000C211111110000001 /* Assets.xcassets */,
 				A100000D211111110000001 /* Info.plist */,
 				A100000E211111110000001 /* MKVQuickPlay.entitlements */,
@@ -137,6 +140,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A100000B211111110000001 /* Assets.xcassets in Resources */,
+				A1000026211111110000001 /* AppIcon.icon in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

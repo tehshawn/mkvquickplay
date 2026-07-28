@@ -267,10 +267,16 @@ final class MPVLauncher {
     func activateWindow() {
         guard let pid = mpvProcess?.processIdentifier,
               let app = NSRunningApplication(processIdentifier: pid) else { return }
-        // macOS 14+ uses request-based "cooperative" activation; the old
-        // .activateIgnoringOtherApps option is deprecated and ignored there.
+        // macOS 14+ uses request-based "cooperative" activation, and macOS 26
+        // tightened focus-stealing prevention so a bare activate() request
+        // from a background app can be denied. Yield our activation claim to
+        // mpv and name ourselves as the source of the request — the sanctioned
+        // hand-off pattern — so the video window reliably comes frontmost.
         if #available(macOS 14.0, *) {
-            app.activate()
+            NSApp.yieldActivation(to: app)
+            if !app.activate(from: .current, options: []) {
+                app.activate()
+            }
         } else {
             app.activate(options: [.activateIgnoringOtherApps])
         }
