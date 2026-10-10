@@ -228,13 +228,15 @@ final class MPVLauncher {
         return connecting
     }
 
-    /// A *launch* connect chain is still opening the channel to a player
-    /// that is starting up. (A reconnect chain also sets `connecting`, but in
-    /// practice that means mpv is quitting — its IPC server goes away before
-    /// the process does — so commands must not be held for it.)
-    private var isLaunchConnecting: Bool {
+    /// Commands can reach the current player, or be held for one that a
+    /// *launch* connect chain is still opening. (A reconnect chain also sets
+    /// `connecting`, but in practice that means mpv is quitting — its IPC
+    /// server goes away before the process does — so commands must not be
+    /// held for it.) Read under one lock acquisition so a connect landing
+    /// between two separate reads can't make both look false.
+    private var canAcceptCommands: Bool {
         stateLock.lock(); defer { stateLock.unlock() }
-        return connecting && launchConnect
+        return connected || (connecting && launchConnect)
     }
 
     private var currentGeneration: Int {
@@ -247,7 +249,7 @@ final class MPVLauncher {
     @discardableResult
     func play(url: URL) -> Bool {
         if isPlaying {
-            if isConnected || isLaunchConnecting {
+            if canAcceptCommands {
                 // A command issued while the channel is still opening is
                 // held and flushed on connect, so a second invocation during
                 // a slow cold start no longer kills and relaunches the player.
@@ -473,6 +475,11 @@ final class MPVLauncher {
             readSource = nil
             socketFD = fd
             startReading(fd: fd, generation: gen)
+            // Scheduled before the setup writes so a write failure below
+            // can't skip it; it no-ops if the generation has moved on.
+            if firstConnectOfLaunch {
+                verifyFrontmost(generation: gen)
+            }
             // Install the key bindings over IPC as well as via the file
             // (idempotent: same key, same command), so a session can never
             // end up keyless again whatever happened to the file; track
@@ -490,9 +497,6 @@ final class MPVLauncher {
             }
             if attempt >= Timing.fastRetries {
                 NSLog("[MKVQuickPlay] mpv IPC connected after slow start (attempt \(attempt))")
-            }
-            if firstConnectOfLaunch {
-                verifyFrontmost(generation: gen)
             }
             return
         }
