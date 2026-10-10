@@ -59,10 +59,10 @@ RELEASE_NOTES_HTML="$(awk -v ver="$VERSION" '
     }
     return s
   }
-  function flushli() { if (li != "") { print "<li>" li "</li>"; li = "" } }
+  function flushli() { if (li != "") { print "<li>" inline(li) "</li>"; li = "" } }
   /^### / { flushli(); if (inlist) { print "</ul>"; inlist = 0 } print "<h3>" inline(substr($0, 5)) "</h3>"; next }
-  /^- /   { flushli(); if (!inlist) { print "<ul>"; inlist = 1 } li = inline(substr($0, 3)); next }
-  /^  /   { if (li != "") { li = li " " inline(substr($0, 3)); next } }
+  /^- /   { flushli(); if (!inlist) { print "<ul>"; inlist = 1 } li = substr($0, 3); next }
+  /^  /   { if (li != "") { li = li " " substr($0, 3); next } }
   /^$/    { next }
   { flushli(); if (inlist) { print "</ul>"; inlist = 0 } print "<p>" inline($0) "</p>" }
   END { flushli(); if (inlist) print "</ul>" }

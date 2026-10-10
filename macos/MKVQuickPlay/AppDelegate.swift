@@ -6,6 +6,14 @@ extension KeyboardShortcuts.Name {
     /// Global hotkey to preview the current Finder selection. User-recordable
     /// via the menu; works even when the Services shortcut is flaky.
     static let previewSelectedVideo = Self("previewSelectedVideo", initial: .init(.v, modifiers: [.command, .shift]))
+
+    /// The user's current shortcut as macOS shows it ("⇧⌘V"), or nil once
+    /// the user cleared it with the recorder's ✕. Never falls back to the
+    /// hardcoded default: `init(_:initial:)` persists that on first launch,
+    /// so a nil here really means nothing is bound.
+    @MainActor var displayString: String? {
+        KeyboardShortcuts.getShortcut(for: self)?.description
+    }
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -13,6 +21,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// How long Finder needs to finish activating before focus returns to mpv
     /// (fallback path only — see `followInFinder`).
     private static let finderRefocusDelay: TimeInterval = 0.15
+
+    /// A reveal that fails later than this (Finder's `with timeout`, an
+    /// unanswered Automation prompt, the 30 s osascript kill) must not
+    /// activate Finder and re-activate mpv long after the keypress — the
+    /// user may have moved to another app by then.
+    private static let finderFallbackMaxDelay: TimeInterval = 2.0
 
     // UI Controllers
     private var statusBarController: StatusBarController!
@@ -50,6 +64,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Initialize components
         statusBarController = StatusBarController()
+        statusBarController.refreshHotkeyText()
         finderSelectionManager = FinderSelectionManager()
         updaterController = SPUStandardUpdaterController(startingUpdater: true,
                                                          updaterDelegate: nil,
@@ -253,12 +268,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self = self, self.sessionID == session else { return }
             guard let folderOrder = folderOrder, !folderOrder.isEmpty else { return }
             if selected.count > 1 {
+                let key = self.finderSelectionManager.normalizedPath
                 // The folder order only covers the invoked file's folder; a
                 // selection spanning folders (search results, a tag view)
                 // keeps its provisional order rather than shrinking to the
                 // subset that happens to live there.
-                let scoped = folderOrder.filter { selectionKeys.contains(self.finderSelectionManager.normalizedPath($0)) }
-                if scoped.count == selectionKeys.count { self.navigationPlaylist = scoped }
+                let invokedDir = key(invoked.deletingLastPathComponent())
+                guard selected.allSatisfy({ key($0.deletingLastPathComponent()) == invokedDir }) else { return }
+                let scoped = folderOrder.filter { selectionKeys.contains(key($0)) }
+                // Hidden files and symlinks aren't in the folder listing;
+                // keep them (provisional order) rather than dropping them —
+                // one of them may be the file that is playing.
+                let covered = Set(scoped.map(key))
+                self.navigationPlaylist = scoped + provisional.filter { !covered.contains(key($0)) }
             } else {
                 self.navigationPlaylist = folderOrder
             }
@@ -317,10 +339,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// following arrow key went to Finder instead of the player. That path
     /// is kept only as the fallback for when Finder can't be scripted.
     private func followInFinder(_ url: URL) {
+        let requested = Date()
         finderSelectionManager.revealInFinder(url) { [weak self] revealed in
             guard let self = self, !revealed else { return }
-            // Fallback — but only if this file is still the one playing.
-            guard let current = self.currentPreviewURL,
+            // Fallback — only if the answer is fresh and this file is still
+            // the one playing.
+            guard Date().timeIntervalSince(requested) < Self.finderFallbackMaxDelay,
+                  let current = self.currentPreviewURL,
                   self.finderSelectionManager.normalizedPath(current) == self.finderSelectionManager.normalizedPath(url)
             else { return }
             NSWorkspace.shared.activateFileViewerSelecting([url])
@@ -400,6 +425,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Feedback for an explicit user action: on the mpv OSD while a player
+    /// is open, otherwise (menu action with no preview) an alert — an OSD
+    /// command with no player is silently dropped.
+    private func notifyUser(_ text: String) {
+        if MPVLauncher.shared.isPlaying {
+            MPVLauncher.shared.showText(text)
+        } else {
+            let alert = NSAlert()
+            alert.messageText = "Undo Move to Trash"
+            alert.informativeText = text.replacingOccurrences(of: "\n", with: " ")
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "OK")
+            alert.runModalInFront()
+        }
+    }
+
     /// Restore the most recently trashed file and reopen it.
     private func undoLastTrash() {
         guard let entry = undoStack.last else { return }
@@ -409,7 +450,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard FileManager.default.fileExists(atPath: entry.trashed.path) else {
             undoStack.removeLast()
             statusBarController.setLastTrashedName(undoStack.last?.original.lastPathComponent)
-            MPVLauncher.shared.showText("Undo unavailable — file is no longer in the Trash")
+            notifyUser("Undo unavailable — file is no longer in the Trash")
             return
         }
 
@@ -420,7 +461,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard FileManager.default.fileExists(atPath: originalFolder.path) else {
             undoStack.removeLast()
             statusBarController.setLastTrashedName(undoStack.last?.original.lastPathComponent)
-            MPVLauncher.shared.showText("Undo unavailable — original folder is gone (file left in Trash)")
+            notifyUser("Undo unavailable — original folder is gone (file left in Trash)")
             NSLog("[MKVQuickPlay] Undo skipped: \(originalFolder.path) no longer exists")
             return
         }
@@ -430,7 +471,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             // Destination occupied or volume error — keep the entry so the
             // user can resolve the conflict and retry.
-            MPVLauncher.shared.showText("Couldn't restore file")
+            notifyUser("Couldn't restore file")
             NSLog("[MKVQuickPlay] Undo restore failed for \(entry.original.lastPathComponent): \(error)")
             return
         }
@@ -496,12 +537,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showServiceHint() {
+        // KeyboardShortcuts' API is MainActor-isolated; this runs from the
+        // status menu, i.e. on the main thread.
+        let shortcut = MainActor.assumeIsolated { KeyboardShortcuts.Name.previewSelectedVideo.displayString }
+        let hotkeyLine = shortcut.map { "Press \($0), or" }
+            ?? "Set a shortcut with \"Set Keyboard Shortcut…\" in this menu, or"
         let alert = NSAlert()
         alert.messageText = "How to Preview Videos"
         alert.informativeText = """
         Select a video file in Finder, then:
 
-        \u{2022} Press Cmd+Shift+V, or
+        \u{2022} \(hotkeyLine)
         \u{2022} Use Finder > Services > Preview with MKVQuickPlay
 
         While previewing:
@@ -513,6 +559,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         \u{2022} Escape or Q: Close preview
         \u{2022} Space: Pause/Resume
         \u{2022} Left/Right: Seek
+        \u{2022} M: Mute/unmute
+        \u{2022} F: Toggle full screen
 
         To change the shortcut, use "Set Keyboard Shortcut…" in this menu.
         """

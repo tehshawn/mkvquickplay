@@ -42,8 +42,6 @@ All notable changes to MKV QuickPlay are documented here.
 - A multi-file selection spanning several folders (search results, a tag view)
   no longer shrinks to the files in the first file's folder once Finder's sort
   order is applied.
-- The sort query no longer borrows the front Finder window's sort when no
-  window shows the video's folder; it falls back to alphabetical as documented.
 - Undo Move to Trash no longer wedges on a file whose original folder is gone
   (renamed, deleted, ejected volume) — the entry is dropped with an explanation
   so older undos stay reachable.
@@ -59,6 +57,13 @@ All notable changes to MKV QuickPlay are documented here.
   fixes).
 
 ### Changed
+- Videos previewed from the Desktop, or from a search, Recents or Tags window,
+  now navigate (Up/Down) in alphabetical order. Previously the player borrowed
+  the sort of whichever Finder window happened to be in front — one unrelated
+  to the video's folder — so the order could be unexpected. Open the video's
+  folder in a Finder window to navigate in that window's sort order.
+- The menu, tooltip, help and About text show the shortcut you actually have
+  set rather than the factory default.
 - The app keeps itself out of App Nap only while a player window is open, so
   its timers aren't coalesced mid-session.
 - Help text now lists `Cmd+Z` and points to "Set Keyboard Shortcut…" in the

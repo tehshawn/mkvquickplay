@@ -31,10 +31,14 @@ class FinderSelectionManager {
     /// reveals the file the user ended up on, not every intermediate one.
     private var revealSerial = 0
 
-    /// Whether the user has denied the Automation permission — skip further
-    /// Finder queries instead of re-prompting the TCC machinery. Cleared again
-    /// by any later successful query, so flipping the switch back on in
-    /// System Settings takes effect without relaunching. Guarded by stateLock.
+    /// Whether the user has denied the Automation permission. Only the
+    /// per-keypress reveal is gated on it (so navigation doesn't spawn a
+    /// doomed osascript on every arrow press); the once-per-session sort
+    /// query is always attempted — after a "Don't Allow" it fails fast with
+    /// -1743 and no re-prompt — and the next success clears the latch, so
+    /// re-enabling the permission in System Settings takes effect on the
+    /// next preview from any entry point, without relaunching. Guarded by
+    /// stateLock.
     private var automationDenied = false
     private let stateLock = NSLock()
 
@@ -163,7 +167,9 @@ class FinderSelectionManager {
     /// in an existing window for its folder (or opens one, behind the player).
     /// Completes on the main thread with `false` when Finder could not be
     /// scripted (permission declined, timeout), so the caller can fall back
-    /// to NSWorkspace, which does activate Finder. Superseded requests (the
+    /// to NSWorkspace, which does activate Finder — the caller only does so
+    /// for a prompt failure; a late one (timeout, unanswered consent prompt)
+    /// is deliberately not retried via activation. Superseded requests (the
     /// user kept navigating) complete with `true` and do nothing.
     func revealInFinder(_ url: URL, completion: @escaping (_ revealed: Bool) -> Void) {
         guard !isAutomationDenied else {
@@ -237,9 +243,6 @@ class FinderSelectionManager {
     /// can't be mapped — the caller then keeps the honest alphabetical order
     /// rather than borrowing some other window's sort.
     private func finderSortSettings(forFolderOf url: URL) -> (SortKey, reversed: Bool)? {
-        // Permission was denied earlier — don't keep asking.
-        guard !isAutomationDenied else { return nil }
-
         let escaped = Self.escapedForAppleScript(url.deletingLastPathComponent().path)
 
         // `with timeout` bounds the Apple Event reply wait so a busy Finder
@@ -430,10 +433,19 @@ class FinderSelectionManager {
             let date: Date
             let size: Int
         }
+        // Only stat what this sort compares on. Name — Finder's default, and
+        // what column/gallery views fall through to — needs no per-file I/O.
+        let keys: Set<URLResourceKey>
+        switch key {
+        case .name:     keys = []
+        case .kind:     keys = [.localizedTypeDescriptionKey]
+        case .modified: keys = [.contentModificationDateKey]
+        case .created:  keys = [.creationDateKey]
+        case .size:     keys = [.fileSizeKey]
+        }
         let entries: [Entry] = urls.map { url in
-            let values = try? url.resourceValues(forKeys: [
-                .localizedTypeDescriptionKey, .contentModificationDateKey, .creationDateKey, .fileSizeKey,
-            ])
+            var values: URLResourceValues? = nil
+            if !keys.isEmpty { values = try? url.resourceValues(forKeys: keys) }
             let date: Date
             switch key {
             case .created: date = values?.creationDate ?? .distantPast

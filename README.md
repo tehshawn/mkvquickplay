@@ -109,6 +109,7 @@ open /Applications/MKVQuickPlay.app
 | `Up Arrow` | Previous video |
 | `P` | Toggle the Purple Finder tag (mark keepers while culling) |
 | `Delete` | Move to Trash and advance (when enabled in menu) |
+| `Cmd+Z` | Undo Move to Trash (restores the file and reopens it) |
 | `Space` | Pause/Resume |
 | `Left/Right Arrow` | Seek backward/forward |
 | `Escape` or `Q` | Close preview |

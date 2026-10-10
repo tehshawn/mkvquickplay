@@ -2,9 +2,12 @@
 
 macOS-only menu bar app for quick video preview via mpv. Source lives in `macos/`.
 The app drives a single persistent mpv window over its JSON IPC socket
-(`NSTemporaryDirectory()/mkvquickplay.sock` — the per-user temp dir under
-`/var/folders/...`, not world-readable `/tmp`); navigation / trash / undo keys
-are mpv `script-message`s delivered back as `client-message` IPC events.
+(`NSTemporaryDirectory()/mkvquickplay-<pid>-<n>.sock`, where `<pid>` is the
+app's own pid and `<n>` a per-launch counter — the per-user temp dir under
+`/var/folders/...`, not world-readable `/tmp`; the startup sweep deletes
+leftover sockets except those whose `<pid>` is still running); navigation /
+trash / undo keys are mpv `script-message`s delivered back as `client-message`
+IPC events.
 
 Runtime files: the mpv key-bindings file is rewritten before every player
 launch at `~/Library/Application Support/MKVQuickPlay/input.conf` (never in

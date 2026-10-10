@@ -13,6 +13,7 @@ class StatusBarController: NSObject, NSMenuDelegate {
 
     private var undoItem: NSMenuItem?
     private var updateAvailableItem: NSMenuItem?
+    private var hotkeyItem: NSMenuItem?
 
     var onHelpRequested: (() -> Void)?
     var onRevealRequested: (() -> Void)?
@@ -37,6 +38,17 @@ class StatusBarController: NSObject, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         loginItem?.state = (SMAppService.mainApp.status == .enabled) ? .on : .off
         trashItem?.state = isTrashEnabled ? .on : .off
+        refreshHotkeyText()
+    }
+
+    /// Show the shortcut the user actually has, not the factory default:
+    /// in the menu hint and the status-item tooltip. Main thread only
+    /// (KeyboardShortcuts' API is MainActor-isolated).
+    func refreshHotkeyText() {
+        let shortcut = MainActor.assumeIsolated { KeyboardShortcuts.Name.previewSelectedVideo.displayString }
+        hotkeyItem?.title = shortcut.map { "Select video in Finder, press \($0)" }
+            ?? "Select video in Finder (no preview shortcut set)"
+        statusItem?.button?.toolTip = shortcut.map { "MKV QuickPlay - \($0) to preview" } ?? "MKV QuickPlay"
     }
 
     private func setupStatusItem() {
@@ -44,7 +56,7 @@ class StatusBarController: NSObject, NSMenuDelegate {
 
         if let button = statusItem?.button {
             button.image = Self.makeMenuBarIcon()
-            button.toolTip = "MKV QuickPlay - Cmd+Shift+V to preview"
+            button.toolTip = "MKV QuickPlay"
         }
 
         statusItem?.menu = createMenu()
@@ -100,9 +112,10 @@ class StatusBarController: NSObject, NSMenuDelegate {
         menu.addItem(updateAvail)
         updateAvailableItem = updateAvail
 
-        let hotkeyItem = NSMenuItem(title: "Select video in Finder, press Cmd+Shift+V", action: nil, keyEquivalent: "")
-        hotkeyItem.isEnabled = false
-        menu.addItem(hotkeyItem)
+        let hotkey = NSMenuItem(title: "Select video in Finder, press the preview shortcut", action: nil, keyEquivalent: "")
+        hotkey.isEnabled = false
+        menu.addItem(hotkey)
+        hotkeyItem = hotkey
 
         let navItem = NSMenuItem(title: "Up/Down to navigate, Esc to close", action: nil, keyEquivalent: "")
         navItem.isEnabled = false
@@ -209,6 +222,7 @@ class StatusBarController: NSObject, NSMenuDelegate {
         }
         alert.runModalInFront()
         KeyboardShortcuts.enable(.previewSelectedVideo)
+        refreshHotkeyText()
     }
 
     /// Enable/label the Undo item based on the most recently trashed file.
@@ -246,6 +260,7 @@ class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func showAbout() {
+        let shortcut = MainActor.assumeIsolated { KeyboardShortcuts.Name.previewSelectedVideo.displayString } ?? "No shortcut set"
         let info = Bundle.main.infoDictionary
         let version = info?["CFBundleShortVersionString"] as? String ?? "?"
         let build = info?["CFBundleVersion"] as? String ?? "?"
@@ -267,7 +282,7 @@ class StatusBarController: NSObject, NSMenuDelegate {
 
         Quick video preview for macOS.
 
-        Cmd+Shift+V: Preview selected video
+        \(shortcut): Preview selected video
         Up/Down arrows: Navigate videos
         P: Toggle Purple tag
         Delete: Move to Trash (when enabled)

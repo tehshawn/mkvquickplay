@@ -31,7 +31,8 @@ final class MPVLauncher {
         /// be declined under the macOS 14+ focus-stealing rules.
         static let focusCheckDelay: TimeInterval = 0.3
         /// Commands issued while the channel is still opening are held and
-        /// flushed on connect; anything beyond this many is dropped.
+        /// flushed on connect; beyond this many the oldest is evicted (for
+        /// `loadfile … replace` only the latest request matters).
         static let maxPendingCommands = 16
         /// Cap on mpv warning/error lines forwarded to the system log per
         /// player launch, so a broken file can't flood Console.
@@ -97,6 +98,9 @@ final class MPVLauncher {
     private var generation = 0
     private var connected = false
     private var connecting = false
+    /// Whether the active connect chain belongs to a fresh launch (as opposed
+    /// to a self-heal reconnect). Only meaningful while `connecting`.
+    private var launchConnect = false
 
     // Latest observed player values, coalesced into UserDefaults (ioQueue-confined).
     private var pendingVolume: Double?
@@ -224,6 +228,15 @@ final class MPVLauncher {
         return connecting
     }
 
+    /// A *launch* connect chain is still opening the channel to a player
+    /// that is starting up. (A reconnect chain also sets `connecting`, but in
+    /// practice that means mpv is quitting — its IPC server goes away before
+    /// the process does — so commands must not be held for it.)
+    private var isLaunchConnecting: Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return connecting && launchConnect
+    }
+
     private var currentGeneration: Int {
         stateLock.lock(); defer { stateLock.unlock() }
         return generation
@@ -234,15 +247,16 @@ final class MPVLauncher {
     @discardableResult
     func play(url: URL) -> Bool {
         if isPlaying {
-            if isConnected || isConnecting {
+            if isConnected || isLaunchConnecting {
                 // A command issued while the channel is still opening is
                 // held and flushed on connect, so a second invocation during
                 // a slow cold start no longer kills and relaunches the player.
                 sendCommand(["loadfile", url.path, "replace"])
                 return true
             }
-            // mpv is running but the control channel is gone for good —
-            // restart clean rather than leaving an uncontrollable window around.
+            // mpv is running but the control channel is gone (or it is on
+            // its way out) — restart clean rather than leaving an
+            // uncontrollable window around or losing the request.
             stop()
         }
         return launch(url: url)
@@ -258,6 +272,13 @@ final class MPVLauncher {
     }
 
     private func launch(url: URL) -> Bool {
+        // A launch must never inherit a predecessor's IPC state: a relaunch
+        // can race the old player's termination handler (isRunning flips
+        // before its main-queue hop runs, and that handler then skips cleanup
+        // on the pid mismatch), leaving a dead fd, read buffer or held
+        // commands behind. Idempotent when a teardown already happened.
+        teardownSocket()
+
         guard let mpvPath = findMPV() else {
             showMPVNotFoundAlert()
             return false
@@ -350,17 +371,24 @@ final class MPVLauncher {
 
         mpvProcess = nil
         teardownSocket()
-        endSessionActivity()
+        // Detach the activity token so an immediately following launch()
+        // begins its own; keep this one alive until the SIGKILL escalation
+        // has run so that grace timer isn't coalesced by App Nap.
+        let activity = sessionActivity
+        sessionActivity = nil
 
-        if process.isRunning {
-            process.terminate()
-            // Escalate to SIGKILL if it doesn't exit promptly, without
-            // blocking the main thread.
-            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + Timing.terminateGrace) {
-                if process.isRunning {
-                    kill(process.processIdentifier, SIGKILL)
-                }
+        guard process.isRunning else {
+            if let activity = activity { ProcessInfo.processInfo.endActivity(activity) }
+            return
+        }
+        process.terminate()
+        // Escalate to SIGKILL if it doesn't exit promptly, without
+        // blocking the main thread.
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + Timing.terminateGrace) {
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
             }
+            if let activity = activity { ProcessInfo.processInfo.endActivity(activity) }
         }
     }
 
@@ -406,6 +434,7 @@ final class MPVLauncher {
         generation += 1
         connected = false // a new session must never inherit a predecessor's flag
         connecting = true
+        launchConnect = firstConnectOfLaunch
         let gen = generation
         stateLock.unlock()
 
@@ -446,17 +475,19 @@ final class MPVLauncher {
             startReading(fd: fd, generation: gen)
             // Install the key bindings over IPC as well as via the file
             // (idempotent: same key, same command), so a session can never
-            // end up keyless again whatever happened to the file.
-            for binding in Self.keyBindings {
-                sendCommand(["keybind", binding.key, binding.command])
-            }
-            // Track volume / mute so we can persist them for next time.
-            sendCommand(["observe_property", 1, "volume"])
-            sendCommand(["observe_property", 2, "mute"])
-            // Anything the app asked for while the player was still coming up.
-            let held = pendingCommands
+            // end up keyless again whatever happened to the file; track
+            // volume / mute so we can persist them; then replay anything the
+            // app asked for while the player was still coming up. Written
+            // right here, on ioQueue, so nothing the main thread enqueues
+            // meanwhile can slip in ahead of (or get re-held behind) them.
+            var setup: [[Any]] = Self.keyBindings.map { ["keybind", $0.key, $0.command] }
+            setup.append(["observe_property", 1, "volume"])
+            setup.append(["observe_property", 2, "mute"])
+            setup.append(contentsOf: pendingCommands)
             pendingCommands.removeAll()
-            for command in held { sendCommand(command) }
+            for command in setup {
+                if !writeNow(command, generation: gen) { return } // channel torn down
+            }
             if attempt >= Timing.fastRetries {
                 NSLog("[MKVQuickPlay] mpv IPC connected after slow start (attempt \(attempt))")
             }
@@ -505,7 +536,11 @@ final class MPVLauncher {
     /// re-invoke the service.
     private func reconnectIfPlayerAlive() {
         DispatchQueue.main.async { [weak self] in
-            guard let self = self, self.mpvProcess?.isRunning == true else { return }
+            // Only heal if no newer session took over since the teardown that
+            // scheduled us: a launch() in between has already started its own
+            // connect chain (connecting == true) or has connected.
+            guard let self = self, self.mpvProcess?.isRunning == true,
+                  !self.isConnecting, !self.isConnected else { return }
             NSLog("[MKVQuickPlay] IPC channel dropped while mpv is running — reconnecting")
             self.connectSocket(path: self.currentSocketPath, firstConnectOfLaunch: false)
         }
@@ -668,27 +703,41 @@ final class MPVLauncher {
             guard let self = self else { return }
             if self.socketFD < 0 {
                 // Player still coming up: hold the command for the connect.
-                if self.isConnecting && self.pendingCommands.count < Timing.maxPendingCommands {
+                // Bounded FIFO that evicts the oldest entry — for
+                // `loadfile … replace` only the latest request matters.
+                if self.isConnecting {
+                    if self.pendingCommands.count >= Timing.maxPendingCommands {
+                        self.pendingCommands.removeFirst()
+                    }
                     self.pendingCommands.append(command)
                 }
                 return
             }
-            guard var data = try? JSONSerialization.data(withJSONObject: ["command": command]) else { return }
-            data.append(0x0A)
-            var written = -1
-            repeat {
-                written = data.withUnsafeBytes { raw -> Int in
-                    write(self.socketFD, raw.baseAddress, raw.count)
-                }
-            } while written < 0 && errno == EINTR
-            if written < 0 {
-                // Peer is gone (EPIPE, SIGPIPE suppressed) — drop the channel
-                // so isConnected turns false, and self-heal if mpv is alive.
-                if self.teardownSocket(ifGeneration: gen) {
-                    self.reconnectIfPlayerAlive()
-                }
-            }
+            self.writeNow(command, generation: gen)
         }
+    }
+
+    /// ioQueue-confined. Writes one command to the open socket; returns false
+    /// (after tearing the channel down) when the peer is gone.
+    @discardableResult
+    private func writeNow(_ command: [Any], generation gen: Int) -> Bool {
+        guard var data = try? JSONSerialization.data(withJSONObject: ["command": command]) else { return true }
+        data.append(0x0A)
+        var written = -1
+        repeat {
+            written = data.withUnsafeBytes { raw -> Int in
+                write(self.socketFD, raw.baseAddress, raw.count)
+            }
+        } while written < 0 && errno == EINTR
+        if written < 0 {
+            // Peer is gone (EPIPE, SIGPIPE suppressed) — drop the channel
+            // so isConnected turns false, and self-heal if mpv is alive.
+            if teardownSocket(ifGeneration: gen) {
+                reconnectIfPlayerAlive()
+            }
+            return false
+        }
+        return true
     }
 
     /// Tear down the IPC channel. Pass the generation the caller belongs to so
