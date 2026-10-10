@@ -14,6 +14,8 @@ class FinderSelectionManager {
 
     /// Cache for normalizedPath: symlink resolution stats every path component,
     /// and playlist lookups run it per element per keypress. Main-thread only.
+    /// Scoped to one preview session (see `resetPathCache`) so a retargeted
+    /// symlink or remounted volume can't leave stale resolutions behind.
     private var pathCache: [String: String] = [:]
 
     /// Serial queue for Finder sort queries: the Apple Event round-trip (and
@@ -21,10 +23,31 @@ class FinderSelectionManager {
     /// thread, where mpv's navigation callbacks are delivered.
     private let queryQueue = DispatchQueue(label: "com.mkvquickplay.findersort", qos: .userInitiated)
 
-    /// Whether the user has denied the Automation permission this session —
-    /// skip further Finder queries instead of re-prompting the TCC machinery.
-    /// Confined to queryQueue.
+    /// Separate serial queue for "reveal in Finder" requests, so following
+    /// the playing file never waits behind a slow sort query.
+    private let revealQueue = DispatchQueue(label: "com.mkvquickplay.finderreveal", qos: .userInitiated)
+
+    /// Monotonic id of the latest reveal request: rapid navigation only ever
+    /// reveals the file the user ended up on, not every intermediate one.
+    private var revealSerial = 0
+
+    /// Whether the user has denied the Automation permission — skip further
+    /// Finder queries instead of re-prompting the TCC machinery. Cleared again
+    /// by any later successful query, so flipping the switch back on in
+    /// System Settings takes effect without relaunching. Guarded by stateLock.
     private var automationDenied = false
+    private let stateLock = NSLock()
+
+    private var isAutomationDenied: Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return automationDenied
+    }
+
+    private func setAutomationDenied(_ denied: Bool) {
+        stateLock.lock()
+        automationDenied = denied
+        stateLock.unlock()
+    }
 
     /// Normalized path for reliable comparison across URL representations
     /// (file-reference URLs, symlinks, /private prefixes, trailing slashes).
@@ -35,6 +58,13 @@ class FinderSelectionManager {
         if pathCache.count > 8192 { pathCache.removeAll(keepingCapacity: true) }
         pathCache[key] = value
         return value
+    }
+
+    /// Forget cached symlink resolutions — call at the start of each preview
+    /// session. The cache only exists to make per-keypress playlist lookups
+    /// cheap within one playlist, so a per-session lifetime loses nothing.
+    func resetPathCache() {
+        pathCache.removeAll(keepingCapacity: true)
     }
 
     /// Filter a set of URLs down to supported video files, sorted by name
@@ -88,11 +118,13 @@ class FinderSelectionManager {
         }
     }
 
+    // MARK: - Finder queries
+
     /// Ask Finder for its current selection (used by the global hotkey, which
     /// arrives with no pasteboard, unlike a Service invocation). Runs off-main;
     /// completes on the main thread. `urls` is nil when the query itself
     /// failed (never conflate that with an empty selection); `automationDenied`
-    /// reports whether the failure was a declined Automation permission.
+    /// reports whether *this* query failed because Automation was declined.
     func fetchFinderSelection(completion: @escaping (_ urls: [URL]?, _ automationDenied: Bool) -> Void) {
         let source = """
         with timeout of 3 seconds
@@ -109,12 +141,64 @@ class FinderSelectionManager {
         """
         queryQueue.async { [weak self] in
             guard let self = self else { return }
-            let output = self.runAppleScript(source)
-            let denied = self.automationDenied
-            let urls = output.map { text in
-                text.split(separator: "\n").map { URL(fileURLWithPath: String($0)) }
+            let urls: [URL]?
+            let denied: Bool
+            switch self.runAppleScript(source) {
+            case .output(let text):
+                urls = text.split(separator: "\n").map { URL(fileURLWithPath: String($0)) }
+                denied = false
+            case .denied:
+                urls = nil
+                denied = true
+            case .failed:
+                urls = nil
+                denied = false
             }
             DispatchQueue.main.async { completion(urls, denied) }
+        }
+    }
+
+    /// Move Finder's selection to `url` *without* activating Finder, so the
+    /// mpv window keeps keyboard focus — `reveal` scrolls the file into view
+    /// in an existing window for its folder (or opens one, behind the player).
+    /// Completes on the main thread with `false` when Finder could not be
+    /// scripted (permission declined, timeout), so the caller can fall back
+    /// to NSWorkspace, which does activate Finder. Superseded requests (the
+    /// user kept navigating) complete with `true` and do nothing.
+    func revealInFinder(_ url: URL, completion: @escaping (_ revealed: Bool) -> Void) {
+        guard !isAutomationDenied else {
+            DispatchQueue.main.async { completion(false) }
+            return
+        }
+        stateLock.lock()
+        revealSerial += 1
+        let serial = revealSerial
+        stateLock.unlock()
+
+        let escaped = Self.escapedForAppleScript(url.path)
+        let source = """
+        with timeout of 3 seconds
+            tell application "Finder"
+                reveal ((POSIX file "\(escaped)") as alias)
+            end tell
+        end timeout
+        """
+        revealQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.stateLock.lock()
+            let superseded = (serial != self.revealSerial)
+            self.stateLock.unlock()
+            if superseded {
+                DispatchQueue.main.async { completion(true) }
+                return
+            }
+            let revealed: Bool
+            if case .output = self.runAppleScript(source) {
+                revealed = true
+            } else {
+                revealed = false
+            }
+            DispatchQueue.main.async { completion(revealed) }
         }
     }
 
@@ -141,16 +225,22 @@ class FinderSelectionManager {
         case name, kind, modified, created, size
     }
 
-    /// Ask Finder for the active window's sort column/arrangement and direction.
-    /// Returns nil if Finder can't be queried (no window, permission denied).
-    private func finderSortSettings(forFolderOf url: URL) -> (SortKey, reversed: Bool)? {
-        // Permission was denied earlier this session — don't keep asking.
-        guard !automationDenied else { return nil }
-
-        let folderPath = url.deletingLastPathComponent().path
-        let escaped = folderPath
+    private static func escapedForAppleScript(_ string: String) -> String {
+        return string
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    /// Ask Finder for the sort column/arrangement and direction of the window
+    /// showing the file's folder. Returns nil if Finder can't be queried
+    /// (permission denied), no window shows that folder, or the view's sort
+    /// can't be mapped — the caller then keeps the honest alphabetical order
+    /// rather than borrowing some other window's sort.
+    private func finderSortSettings(forFolderOf url: URL) -> (SortKey, reversed: Bool)? {
+        // Permission was denied earlier — don't keep asking.
+        guard !isAutomationDenied else { return nil }
+
+        let escaped = Self.escapedForAppleScript(url.deletingLastPathComponent().path)
 
         // `with timeout` bounds the Apple Event reply wait so a busy Finder
         // degrades to the alphabetical fallback instead of hanging the app.
@@ -174,9 +264,6 @@ class FinderSelectionManager {
                         end if
                     end try
                 end repeat
-                if theWindow is missing value then
-                    if (count of Finder windows) > 0 then set theWindow to front Finder window
-                end if
                 if theWindow is missing value then return ""
                 set theView to current view of theWindow
                 set sortKey to "name"
@@ -229,19 +316,49 @@ class FinderSelectionManager {
         end timeout
         """
 
-        guard let output = runAppleScript(source) else { return nil }
+        guard case .output(let output) = runAppleScript(source) else { return nil }
         let parts = output.split(separator: "|").map(String.init)
         guard parts.count == 2, let key = SortKey(rawValue: parts[0]) else { return nil }
         return (key, reversed: parts[1] == "reversed")
     }
 
+    /// Reads a pipe to EOF on a background queue from the moment it is
+    /// created, so the child can never block on a full pipe buffer.
+    private final class PipeDrain {
+        private var collected = Data()
+        private let done = DispatchGroup()
+
+        init(_ pipe: Pipe) {
+            done.enter()
+            DispatchQueue.global(qos: .userInitiated).async { [self] in
+                self.collected = pipe.fileHandleForReading.readDataToEndOfFile()
+                self.done.leave()
+            }
+        }
+
+        /// Blocks until the writer closes the pipe (i.e. the child exited).
+        func data() -> Data {
+            done.wait()
+            return collected
+        }
+    }
+
+    private enum ScriptResult {
+        case output(String)
+        /// The user declined the Automation permission (-1743).
+        case denied
+        /// Anything else: timeout, no Finder window, osascript killed.
+        case failed
+    }
+
     /// Run an AppleScript via an osascript subprocess and return its stdout.
     /// A subprocess (rather than NSAppleScript, which is main-thread bound and
     /// blocks unboundedly on the TCC consent prompt) keeps the query fully
-    /// isolated: it runs on queryQueue and a wedged Finder gets hard-killed.
-    /// Apple Events sent by the child are attributed to this app (responsible
-    /// process), so the existing Automation grant applies. queryQueue-confined.
-    private func runAppleScript(_ source: String) -> String? {
+    /// isolated: it runs on a background queue and a wedged Finder gets
+    /// hard-killed. Apple Events sent by the child are attributed to this app
+    /// (responsible process), so the existing Automation grant applies.
+    /// Thread-safe; callers serialize on their own queues.
+    private func runAppleScript(_ source: String) -> ScriptResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", source]
@@ -255,78 +372,100 @@ class FinderSelectionManager {
             try process.run()
         } catch {
             NSLog("[FinderSelectionManager] Could not run osascript: \(error)")
-            return nil
+            return .failed
         }
 
         // The in-script `with timeout` bounds Finder's reply; this bounds a
         // wedged osascript itself. 30s leaves room for the one-time Automation
         // consent prompt, which blocks the child until the user answers.
+        // Escalate to SIGKILL so a child that ignores SIGTERM can't wedge the
+        // queue (and with it the hotkey) for the rest of the session.
         let killer = DispatchWorkItem {
             if process.isRunning { process.terminate() }
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) {
+                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            }
         }
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 30, execute: killer)
+
+        // Drain both pipes *before* waiting: a pipe holds 64 KB, and a large
+        // Finder selection prints more than that, which would otherwise leave
+        // osascript blocked on write() until the killer fires.
+        let out = PipeDrain(stdout)
+        let err = PipeDrain(stderr)
         process.waitUntilExit()
         killer.cancel()
+        let outData = out.data()
+        let errData = err.data()
 
-        let errData = stderr.fileHandleForReading.readDataToEndOfFile()
         if process.terminationStatus != 0 {
             let message = String(data: errData, encoding: .utf8) ?? ""
             // -1743 = errAEEventNotPermitted: the user declined Automation
-            // access. Remember it so we stop querying for this session.
+            // access. Remember it so we stop querying until a query succeeds.
             if message.contains("-1743") {
-                automationDenied = true
-                NSLog("[FinderSelectionManager] Automation permission denied — using alphabetical order this session")
-            } else {
-                NSLog("[FinderSelectionManager] Finder sort query failed: \(message)")
+                setAutomationDenied(true)
+                NSLog("[FinderSelectionManager] Automation permission denied — using alphabetical order")
+                return .denied
             }
-            return nil
+            NSLog("[FinderSelectionManager] Finder query failed: \(message)")
+            return .failed
         }
 
-        let outData = stdout.fileHandleForReading.readDataToEndOfFile()
-        return String(data: outData, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        setAutomationDenied(false)
+        let text = String(data: outData, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return .output(text)
     }
 
     /// Sort video URLs to mirror Finder's chosen column/arrangement.
     private func sortedVideos(_ urls: [URL], by key: SortKey, reversed: Bool) -> [URL] {
-        func name(_ u: URL) -> String { u.lastPathComponent }
-        func kind(_ u: URL) -> String {
-            (try? u.resourceValues(forKeys: [.localizedTypeDescriptionKey]).localizedTypeDescription) ?? ""
+        // Fetch each file's sort key once up front (decorate-sort-undecorate)
+        // rather than inside the comparator: a Kind sort of a 500-video folder
+        // would otherwise make thousands of LaunchServices/stat calls, which
+        // on a network volume keeps the query queue busy for seconds.
+        struct Entry {
+            let url: URL
+            let name: String
+            let kind: String
+            let date: Date
+            let size: Int
         }
-        func date(_ u: URL, _ rk: URLResourceKey) -> Date {
-            let v = try? u.resourceValues(forKeys: [rk])
-            switch rk {
-            case .creationDateKey: return v?.creationDate ?? .distantPast
-            default: return v?.contentModificationDate ?? .distantPast
+        let entries: [Entry] = urls.map { url in
+            let values = try? url.resourceValues(forKeys: [
+                .localizedTypeDescriptionKey, .contentModificationDateKey, .creationDateKey, .fileSizeKey,
+            ])
+            let date: Date
+            switch key {
+            case .created: date = values?.creationDate ?? .distantPast
+            default: date = values?.contentModificationDate ?? .distantPast
             }
-        }
-        func size(_ u: URL) -> Int {
-            (try? u.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            return Entry(url: url,
+                         name: url.lastPathComponent,
+                         kind: values?.localizedTypeDescription ?? "",
+                         date: date,
+                         size: values?.fileSize ?? 0)
         }
 
         // Apply the direction to the primary key only — Finder tie-breaks equal
         // primary keys by name ascending regardless of the sort direction, so
         // reversing the whole array (tiebreaker included) would flip an
         // all-same-kind folder into exact reverse-alphabetical order.
-        return urls.sorted { lhs, rhs in
+        return entries.sorted { lhs, rhs in
             let order: ComparisonResult
             switch key {
             case .name:
-                order = name(lhs).localizedStandardCompare(name(rhs))
+                order = lhs.name.localizedStandardCompare(rhs.name)
             case .kind:
-                order = kind(lhs).localizedStandardCompare(kind(rhs))
-            case .modified:
-                order = date(lhs, .contentModificationDateKey).compare(date(rhs, .contentModificationDateKey))
-            case .created:
-                order = date(lhs, .creationDateKey).compare(date(rhs, .creationDateKey))
+                order = lhs.kind.localizedStandardCompare(rhs.kind)
+            case .modified, .created:
+                order = lhs.date.compare(rhs.date)
             case .size:
-                let l = size(lhs), r = size(rhs)
-                order = l == r ? .orderedSame : (l < r ? .orderedAscending : .orderedDescending)
+                order = lhs.size == rhs.size ? .orderedSame : (lhs.size < rhs.size ? .orderedAscending : .orderedDescending)
             }
             if order == .orderedSame {
-                return name(lhs).localizedStandardCompare(name(rhs)) == .orderedAscending
+                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
             }
             return reversed ? order == .orderedDescending : order == .orderedAscending
-        }
+        }.map { $0.url }
     }
 }

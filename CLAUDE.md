@@ -6,7 +6,18 @@ The app drives a single persistent mpv window over its JSON IPC socket
 `/var/folders/...`, not world-readable `/tmp`); navigation / trash / undo keys
 are mpv `script-message`s delivered back as `client-message` IPC events.
 
+Runtime files: the mpv key-bindings file is rewritten before every player
+launch at `~/Library/Application Support/MKVQuickPlay/input.conf` (never in
+the temp dir — macOS purges `$TMPDIR` files not accessed for 3 days, which
+once left sessions with no keys) and the same bindings are re-sent over IPC
+with `keybind` on connect. mpv's stderr is forwarded to the system log with
+an `[mpv]` prefix (bounded per launch).
+
 ## Building (dev)
+
+Requires Xcode 26 or later (KeyboardShortcuts 3.x is a Swift 6.2 package;
+its public API is MainActor-isolated, so call it only from main-thread
+contexts — delegate methods or `@MainActor`-annotated methods).
 
 ```bash
 cd macos

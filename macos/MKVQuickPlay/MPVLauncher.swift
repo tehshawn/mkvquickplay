@@ -26,31 +26,77 @@ final class MPVLauncher {
         static let terminateGrace: TimeInterval = 1.0
         /// Coalesce volume/mute preference writes during slider drags.
         static let prefsFlushDelay: TimeInterval = 0.5
+        /// How long after the IPC channel first opens to check that mpv's
+        /// window actually came frontmost — its own activation request can
+        /// be declined under the macOS 14+ focus-stealing rules.
+        static let focusCheckDelay: TimeInterval = 0.3
+        /// Commands issued while the channel is still opening are held and
+        /// flushed on connect; anything beyond this many is dropped.
+        static let maxPendingCommands = 16
+        /// Cap on mpv warning/error lines forwarded to the system log per
+        /// player launch, so a broken file can't flood Console.
+        static let maxForwardedLogLines = 40
     }
 
+    /// Every key mpv responds to during a preview, as (key, command) in
+    /// input.conf syntax. mpv's own default bindings are disabled wholesale
+    /// (`--no-input-default-bindings`), so this table is the complete
+    /// keyboard surface. Navigation / culling keys emit `script-message`s
+    /// that reach us over IPC; the rest are plain player controls.
+    ///
+    /// The table is written to the bindings file before every launch AND
+    /// re-sent with mpv's `keybind` command once the IPC channel opens, so a
+    /// missing or stale file can never leave a session without keys again.
+    private static let keyBindings: [(key: String, command: String)] = [
+        ("DOWN", "script-message mkvqp-next"),
+        ("UP", "script-message mkvqp-prev"),
+        ("BS", "script-message mkvqp-trash"),
+        ("DEL", "script-message mkvqp-trash"),
+        ("Meta+z", "script-message mkvqp-undo"),
+        ("p", "script-message mkvqp-tag"),
+        ("ESC", "quit"),
+        ("q", "quit"),
+        ("SPACE", "cycle pause"),
+        ("LEFT", "seek -5"),
+        ("RIGHT", "seek 5"),
+        ("m", "cycle mute"),
+        ("f", "cycle fullscreen"),
+    ]
+
     private var mpvProcess: Process?
-    private var inputConfPath: String?
 
     // Per-user temp dir (not world-readable /tmp): keeps the mpv IPC socket
     // private to this user and avoids collisions between multiple logins.
     // The path is unique per mpv launch so an old, still-dying player can
     // never interfere with the new session's socket. Main-thread confined.
+    //
+    // Only the *socket* lives here. macOS sweeps this directory of regular
+    // files not accessed in 3 days (`dirhelper`, nightly), which is why the
+    // key-bindings file must NOT live here — see `writeInputConf()`.
     private let socketDir = NSTemporaryDirectory()
     private var currentSocketPath = ""
     private var launchCounter = 0
+
+    /// Keeps the app out of App Nap while a player is open, so the IPC
+    /// retry chain, refocus timers and SIGKILL escalation fire on time
+    /// instead of being coalesced. Main-thread confined.
+    private var sessionActivity: NSObjectProtocol?
 
     // IPC state confined to ioQueue.
     private var socketFD: Int32 = -1
     private var readSource: DispatchSourceRead?
     private var readBuffer = Data()
+    private var pendingCommands: [[Any]] = []
     private let ioQueue = DispatchQueue(label: "com.mkvquickplay.ipc")
 
     // Cross-thread session state guarded by stateLock: bumping `generation`
     // invalidates any in-flight connect attempt; `connected` lets main-thread
-    // code ask whether commands can currently reach mpv.
+    // code ask whether commands can currently reach mpv; `connecting` means a
+    // connect chain for the current generation is still patrolling.
     private let stateLock = NSLock()
     private var generation = 0
     private var connected = false
+    private var connecting = false
 
     // Latest observed player values, coalesced into UserDefaults (ioQueue-confined).
     private var pendingVolume: Double?
@@ -82,14 +128,23 @@ final class MPVLauncher {
         // SIGPIPE — whose default disposition would kill the whole app when
         // mpv exits while a command is in flight.
         signal(SIGPIPE, SIG_IGN)
-        inputConfPath = createInputConf()
 
-        // Sweep stale sockets left by crashed sessions (paths are per-launch).
+        // Sweep stale sockets left by crashed sessions (paths are per-launch,
+        // `mkvquickplay-<pid>-<n>.sock`) — but leave alone any that belong to
+        // another instance of the app that is still running.
         if let items = try? FileManager.default.contentsOfDirectory(atPath: socketDir) {
-            for item in items where item.hasPrefix("mkvquickplay") && item.hasSuffix(".sock") {
+            for item in items where item.hasPrefix("mkvquickplay-") && item.hasSuffix(".sock") {
+                let ownerField = item.dropFirst("mkvquickplay-".count).split(separator: "-").first ?? ""
+                if let owner = pid_t(ownerField), owner != getpid(),
+                   kill(owner, 0) == 0 || errno == EPERM {
+                    continue // live process
+                }
                 unlink((socketDir as NSString).appendingPathComponent(item))
             }
         }
+
+        // Earlier versions kept the bindings file in the temp dir; tidy it.
+        unlink((socketDir as NSString).appendingPathComponent("mkvquickplay-input.conf"))
     }
 
     private func findMPV() -> String? {
@@ -108,31 +163,49 @@ final class MPVLauncher {
         return nil
     }
 
-    /// Custom mpv key bindings. Navigation keys emit `script-message` events
-    /// that reach us over IPC; everything else is handled by mpv directly.
-    private func createInputConf() -> String {
-        let tempDir = NSTemporaryDirectory()
-        let path = (tempDir as NSString).appendingPathComponent("mkvquickplay-input.conf")
+    // MARK: - Key bindings file
 
-        let config = """
-        DOWN script-message mkvqp-next
-        UP script-message mkvqp-prev
-        BS script-message mkvqp-trash
-        DEL script-message mkvqp-trash
-        Meta+z script-message mkvqp-undo
-        p script-message mkvqp-tag
-        ESC quit
-        q quit
-        SPACE cycle pause
-        LEFT seek -5
-        RIGHT seek 5
-        m cycle mute
-        f cycle fullscreen
-        """
-
-        try? config.write(toFile: path, atomically: true, encoding: .utf8)
-        return path
+    /// `~/Library/Application Support/MKVQuickPlay` — Apple's designated home
+    /// for support files an app needs in order to run. Nothing purges it.
+    /// (Deliberately not named after the bundle identifier: it ends in
+    /// `.app`, and a folder with that extension reads as an app bundle.)
+    private static func supportDirectory() -> URL? {
+        guard let base = FileManager.default.urls(for: .applicationSupportDirectory,
+                                                  in: .userDomainMask).first else { return nil }
+        let dir = base.appendingPathComponent("MKVQuickPlay", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            return dir
+        } catch {
+            NSLog("[MKVQuickPlay] Could not create Application Support directory: \(error)")
+            return nil
+        }
     }
+
+    /// (Re)write the custom mpv key bindings and return the file's path.
+    ///
+    /// Called before *every* mpv launch, not once per app launch. The file
+    /// used to be written a single time into NSTemporaryDirectory(), which
+    /// macOS cleans of files not accessed for 3 days — so after the app had
+    /// sat in the menu bar for a few days, mpv started with `--input-conf`
+    /// pointing at nothing and, with default bindings disabled, no keys at
+    /// all (arrows, Delete, Esc, Space all dead) until the app was relaunched.
+    /// The file is ~300 bytes; rewriting it each time is free and also picks
+    /// up binding changes between app versions.
+    private func writeInputConf() -> String? {
+        let config = Self.keyBindings.map { "\($0.key) \($0.command)" }.joined(separator: "\n") + "\n"
+        let dir = Self.supportDirectory() ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        let url = dir.appendingPathComponent("input.conf")
+        do {
+            try config.write(to: url, atomically: true, encoding: .utf8)
+            return url.path
+        } catch {
+            NSLog("[MKVQuickPlay] Could not write mpv bindings file at \(url.path): \(error)")
+            return nil
+        }
+    }
+
+    // MARK: - Player state
 
     var isPlaying: Bool {
         mpvProcess?.isRunning ?? false
@@ -144,17 +217,32 @@ final class MPVLauncher {
         return connected
     }
 
+    /// Whether a connect chain is still trying to open the channel to a
+    /// player that is (presumably) starting up.
+    private var isConnecting: Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return connecting
+    }
+
+    private var currentGeneration: Int {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return generation
+    }
+
     /// Preview a video: load it into the running window, or (re)launch mpv.
     /// Returns false when mpv can't be found or fails to start.
     @discardableResult
     func play(url: URL) -> Bool {
         if isPlaying {
-            if isConnected {
+            if isConnected || isConnecting {
+                // A command issued while the channel is still opening is
+                // held and flushed on connect, so a second invocation during
+                // a slow cold start no longer kills and relaunches the player.
                 sendCommand(["loadfile", url.path, "replace"])
                 return true
             }
-            // mpv is running but the control channel is gone — restart clean
-            // rather than leaving an uncontrollable window around.
+            // mpv is running but the control channel is gone for good —
+            // restart clean rather than leaving an uncontrollable window around.
             stop()
         }
         return launch(url: url)
@@ -200,6 +288,8 @@ final class MPVLauncher {
             "--no-input-default-bindings",
             "--input-vo-keyboard=yes",
             "--input-ipc-server=\(socketPath)",
+            // Only warnings and errors on stderr, which we forward to the log.
+            "--msg-level=all=warn",
         ]
 
         // Restore the last-used volume / mute state.
@@ -212,15 +302,22 @@ final class MPVLauncher {
             args.append("--mute=yes")
         }
 
-        if let confPath = inputConfPath {
+        if let confPath = writeInputConf() {
             args.append("--input-conf=\(confPath)")
+        } else {
+            NSLog("[MKVQuickPlay] Launching mpv without a bindings file — keys will be installed over IPC once connected")
         }
 
         args.append(url.path)
         process.arguments = args
 
+        // mpv's stderr used to go to /dev/null, which is how a dangling
+        // --input-conf ("Error reading input config file") stayed invisible
+        // for an entire release. Forward its warnings/errors to the log.
+        let stderrPipe = Pipe()
         process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
+        process.standardError = stderrPipe
+        Self.forwardLog(from: stderrPipe)
 
         process.terminationHandler = { [weak self] proc in
             DispatchQueue.main.async {
@@ -229,6 +326,7 @@ final class MPVLauncher {
                 if self.mpvProcess?.processIdentifier == proc.processIdentifier {
                     self.teardownSocket()
                     self.mpvProcess = nil
+                    self.endSessionActivity()
                     self.onClose?()
                 }
             }
@@ -237,9 +335,11 @@ final class MPVLauncher {
         do {
             try process.run()
             mpvProcess = process
-            connectSocket(path: socketPath)
+            beginSessionActivity()
+            connectSocket(path: socketPath, firstConnectOfLaunch: true)
             return true
         } catch {
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
             showLaunchErrorAlert(error: error)
             return false
         }
@@ -250,6 +350,7 @@ final class MPVLauncher {
 
         mpvProcess = nil
         teardownSocket()
+        endSessionActivity()
 
         if process.isRunning {
             process.terminate()
@@ -263,19 +364,35 @@ final class MPVLauncher {
         }
     }
 
+    private func beginSessionActivity() {
+        guard sessionActivity == nil else { return }
+        sessionActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiatedAllowingIdleSystemSleep],
+            reason: "Video preview session")
+    }
+
+    private func endSessionActivity() {
+        if let token = sessionActivity {
+            ProcessInfo.processInfo.endActivity(token)
+            sessionActivity = nil
+        }
+    }
+
     /// Bring the mpv window to the front so it keeps receiving keyboard input.
     func activateWindow() {
         guard let pid = mpvProcess?.processIdentifier,
               let app = NSRunningApplication(processIdentifier: pid) else { return }
         // macOS 14+ uses request-based "cooperative" activation, and macOS 26
-        // tightened focus-stealing prevention so a bare activate() request
-        // from a background app can be denied. Yield our activation claim to
-        // mpv and name ourselves as the source of the request — the sanctioned
-        // hand-off pattern — so the video window reliably comes frontmost.
+        // tightened focus-stealing prevention so a request from a background
+        // app can be declined. A yield only counts while *we* are the active
+        // app — rare for a Dock-less app, but free and correct when it does
+        // apply (right after one of our own alerts). Name ourselves as the
+        // source of the request, fall back to a plain request, and log a
+        // refusal so it leaves evidence instead of failing silently.
         if #available(macOS 14.0, *) {
             NSApp.yieldActivation(to: app)
-            if !app.activate(from: .current, options: []) {
-                app.activate()
+            if !app.activate(from: .current, options: []) && !app.activate() {
+                NSLog("[MKVQuickPlay] macOS declined to bring the mpv window frontmost")
             }
         } else {
             app.activate(options: [.activateIgnoringOtherApps])
@@ -284,22 +401,25 @@ final class MPVLauncher {
 
     // MARK: - IPC
 
-    private func connectSocket(path: String) {
+    private func connectSocket(path: String, firstConnectOfLaunch: Bool) {
         stateLock.lock()
         generation += 1
         connected = false // a new session must never inherit a predecessor's flag
+        connecting = true
         let gen = generation
         stateLock.unlock()
 
         ioQueue.async { [weak self] in
-            self?.attemptConnect(path: path, generation: gen, attempt: 0)
+            self?.attemptConnect(path: path, generation: gen, attempt: 0,
+                                 firstConnectOfLaunch: firstConnectOfLaunch)
         }
     }
 
     /// ioQueue-confined, non-blocking retry chain: never occupies the queue
     /// while waiting, and keeps trying long enough to ride out a slow mpv
     /// cold start instead of stranding the session without keys.
-    private func attemptConnect(path: String, generation gen: Int, attempt: Int) {
+    private func attemptConnect(path: String, generation gen: Int, attempt: Int,
+                                firstConnectOfLaunch: Bool) {
         // A newer launch or a teardown supersedes this attempt.
         stateLock.lock()
         let stale = (generation != gen)
@@ -309,7 +429,10 @@ final class MPVLauncher {
         if let fd = makeConnectedSocket(path: path) {
             stateLock.lock()
             let current = (generation == gen)
-            if current { connected = true }
+            if current {
+                connected = true
+                connecting = false
+            }
             stateLock.unlock()
             if !current {
                 close(fd)
@@ -321,11 +444,24 @@ final class MPVLauncher {
             readSource = nil
             socketFD = fd
             startReading(fd: fd, generation: gen)
+            // Install the key bindings over IPC as well as via the file
+            // (idempotent: same key, same command), so a session can never
+            // end up keyless again whatever happened to the file.
+            for binding in Self.keyBindings {
+                sendCommand(["keybind", binding.key, binding.command])
+            }
             // Track volume / mute so we can persist them for next time.
             sendCommand(["observe_property", 1, "volume"])
             sendCommand(["observe_property", 2, "mute"])
+            // Anything the app asked for while the player was still coming up.
+            let held = pendingCommands
+            pendingCommands.removeAll()
+            for command in held { sendCommand(command) }
             if attempt >= Timing.fastRetries {
                 NSLog("[MKVQuickPlay] mpv IPC connected after slow start (attempt \(attempt))")
+            }
+            if firstConnectOfLaunch {
+                verifyFrontmost(generation: gen)
             }
             return
         }
@@ -335,11 +471,32 @@ final class MPVLauncher {
         }
         guard attempt < Timing.maxRetries else {
             NSLog("[MKVQuickPlay] Could not connect to mpv IPC socket; navigation keys unavailable this session")
+            stateLock.lock()
+            if generation == gen { connecting = false }
+            stateLock.unlock()
+            pendingCommands.removeAll()
             return
         }
         let delay = attempt < Timing.fastRetries ? Timing.fastRetryInterval : Timing.slowRetryInterval
         ioQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
-            self?.attemptConnect(path: path, generation: gen, attempt: attempt + 1)
+            self?.attemptConnect(path: path, generation: gen, attempt: attempt + 1,
+                                 firstConnectOfLaunch: firstConnectOfLaunch)
+        }
+    }
+
+    /// mpv asks to be activated when it creates its window, but under the
+    /// macOS 14+ cooperative model that is only a request — and a child of a
+    /// background app is outside the sanctioned launch paths. If the window
+    /// didn't come frontmost, the arrow keys would go to whatever app is,
+    /// so ask once more on the player's behalf.
+    private func verifyFrontmost(generation gen: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + Timing.focusCheckDelay) { [weak self] in
+            guard let self = self, self.currentGeneration == gen,
+                  let pid = self.mpvProcess?.processIdentifier else { return }
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
+                NSLog("[MKVQuickPlay] mpv window not frontmost after launch — requesting activation")
+                self.activateWindow()
+            }
         }
     }
 
@@ -350,7 +507,7 @@ final class MPVLauncher {
         DispatchQueue.main.async { [weak self] in
             guard let self = self, self.mpvProcess?.isRunning == true else { return }
             NSLog("[MKVQuickPlay] IPC channel dropped while mpv is running — reconnecting")
-            self.connectSocket(path: self.currentSocketPath)
+            self.connectSocket(path: self.currentSocketPath, firstConnectOfLaunch: false)
         }
     }
 
@@ -401,17 +558,20 @@ final class MPVLauncher {
             if n < 0 {
                 // A transient interruption must not kill the channel.
                 if errno == EINTR || errno == EAGAIN { return }
-                self.teardownSocket(ifGeneration: gen)
-                self.reconnectIfPlayerAlive()
+                // Scoped to this source's generation so a stale source can't
+                // tear down (or needlessly reconnect) a successor.
+                if self.teardownSocket(ifGeneration: gen) {
+                    self.reconnectIfPlayerAlive()
+                }
                 return
             }
             if n == 0 {
-                // EOF — mpv closed the socket. Scoped to this source's
-                // generation so a stale source can't tear down a successor.
-                // The process termination handler owns the onClose callback;
-                // if mpv is somehow still alive, self-heal the channel.
-                self.teardownSocket(ifGeneration: gen)
-                self.reconnectIfPlayerAlive()
+                // EOF — mpv closed the socket. The process termination
+                // handler owns the onClose callback; if mpv is somehow still
+                // alive, self-heal the channel.
+                if self.teardownSocket(ifGeneration: gen) {
+                    self.reconnectIfPlayerAlive()
+                }
                 return
             }
             self.readBuffer.append(contentsOf: buf[0..<n])
@@ -501,8 +661,18 @@ final class MPVLauncher {
     }
 
     private func sendCommand(_ command: [Any]) {
+        // Remember which session the command belongs to, so a write that
+        // fails after a relaunch can't tear down the successor's channel.
+        let gen = currentGeneration
         ioQueue.async { [weak self] in
-            guard let self = self, self.socketFD >= 0 else { return }
+            guard let self = self else { return }
+            if self.socketFD < 0 {
+                // Player still coming up: hold the command for the connect.
+                if self.isConnecting && self.pendingCommands.count < Timing.maxPendingCommands {
+                    self.pendingCommands.append(command)
+                }
+                return
+            }
             guard var data = try? JSONSerialization.data(withJSONObject: ["command": command]) else { return }
             data.append(0x0A)
             var written = -1
@@ -514,8 +684,9 @@ final class MPVLauncher {
             if written < 0 {
                 // Peer is gone (EPIPE, SIGPIPE suppressed) — drop the channel
                 // so isConnected turns false, and self-heal if mpv is alive.
-                self.teardownSocket()
-                self.reconnectIfPlayerAlive()
+                if self.teardownSocket(ifGeneration: gen) {
+                    self.reconnectIfPlayerAlive()
+                }
             }
         }
     }
@@ -523,16 +694,19 @@ final class MPVLauncher {
     /// Tear down the IPC channel. Pass the generation the caller belongs to so
     /// a stale actor (an old session's read source) silently no-ops instead of
     /// killing a successor session; omit it for unconditional teardown.
-    private func teardownSocket(ifGeneration gen: Int? = nil) {
+    /// Returns whether anything was actually torn down.
+    @discardableResult
+    private func teardownSocket(ifGeneration gen: Int? = nil) -> Bool {
         // Invalidate synchronously so in-flight connect loops and main-thread
         // isConnected checks see the change immediately…
         stateLock.lock()
         if let gen = gen, gen != generation {
             stateLock.unlock()
-            return
+            return false
         }
         generation += 1
         connected = false
+        connecting = false
         stateLock.unlock()
 
         // …then release the fd and flush pending prefs on the IPC queue.
@@ -543,7 +717,9 @@ final class MPVLauncher {
             self.readSource = nil
             self.socketFD = -1
             self.readBuffer.removeAll()
+            self.pendingCommands.removeAll()
         }
+        return true
     }
 
     /// Synchronously flush coalesced preferences — for app termination, when
@@ -555,26 +731,43 @@ final class MPVLauncher {
         }
     }
 
-    // MARK: - Alerts
+    // MARK: - Diagnostics
 
-    /// LSUIElement apps are never frontmost, so an unactivated modal alert can
-    /// appear behind other windows with no key focus — activate first.
-    private func presentAlert(title: String, message: String) {
-        DispatchQueue.main.async {
-            if #available(macOS 14.0, *) {
-                NSApp.activate()
-            } else {
-                NSApp.activate(ignoringOtherApps: true)
+    /// Forward mpv's stderr lines to the system log, bounded per launch, so a
+    /// misbehaving player leaves evidence in Console.app. Reading continuously
+    /// also keeps mpv from blocking on a full pipe.
+    private static func forwardLog(from pipe: Pipe) {
+        // State lives in a reference so the handler (which Foundation runs on
+        // its own serial queue) mutates a shared object, not captured vars.
+        final class LineBuffer {
+            var buffer = Data()
+            var logged = 0
+        }
+        let state = LineBuffer()
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            if chunk.isEmpty {
+                // EOF — mpv exited.
+                handle.readabilityHandler = nil
+                return
             }
-            let alert = NSAlert()
-            alert.messageText = title
-            alert.informativeText = message
-            alert.alertStyle = .critical
-            alert.addButton(withTitle: "OK")
-            alert.window.level = .floating
-            alert.runModal()
+            state.buffer.append(chunk)
+            while let newline = state.buffer.firstIndex(of: 0x0A) {
+                let line = String(decoding: state.buffer[state.buffer.startIndex..<newline], as: UTF8.self)
+                    .trimmingCharacters(in: .whitespaces)
+                state.buffer.removeSubrange(state.buffer.startIndex...newline)
+                guard !line.isEmpty, state.logged < Timing.maxForwardedLogLines else { continue }
+                state.logged += 1
+                NSLog("[mpv] %@", line)
+                if state.logged == Timing.maxForwardedLogLines {
+                    NSLog("[mpv] (further output from this player suppressed)")
+                }
+            }
+            if state.buffer.count > 64 * 1024 { state.buffer.removeAll() } // unterminated noise
         }
     }
+
+    // MARK: - Alerts
 
     private func showMPVNotFoundAlert() {
         presentAlert(
@@ -585,5 +778,16 @@ final class MPVLauncher {
 
     private func showLaunchErrorAlert(error: Error) {
         presentAlert(title: "Failed to Launch mpv", message: error.localizedDescription)
+    }
+
+    private func presentAlert(title: String, message: String) {
+        DispatchQueue.main.async {
+            let alert = NSAlert()
+            alert.messageText = title
+            alert.informativeText = message
+            alert.alertStyle = .critical
+            alert.addButton(withTitle: "OK")
+            alert.runModalInFront()
+        }
     }
 }

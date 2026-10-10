@@ -187,13 +187,7 @@ class StatusBarController: NSObject, NSMenuDelegate {
 
     /// Lightweight shortcut recorder: an alert hosting the KeyboardShortcuts
     /// recorder field — no settings window needed for a one-setting app.
-    @objc private func setShortcutAction() {
-        if #available(macOS 14.0, *) {
-            NSApp.activate()
-        } else {
-            NSApp.activate(ignoringOtherApps: true)
-        }
-
+    @MainActor @objc private func setShortcutAction() {
         let recorder = KeyboardShortcuts.RecorderCocoa(for: .previewSelectedVideo)
         recorder.frame = NSRect(x: 0, y: 0, width: 180, height: 26)
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 220, height: 32))
@@ -205,7 +199,6 @@ class StatusBarController: NSObject, NSMenuDelegate {
         alert.informativeText = "Press the key combination to use for previewing the selected Finder video. Click the ✕ in the field to clear it."
         alert.accessoryView = container
         alert.addButton(withTitle: "Done")
-        alert.window.level = .floating
 
         // Don't let the still-armed global hotkey fire mid-dialog, and give
         // the recorder key focus. The focus hop must be async: RecorderCocoa
@@ -214,7 +207,7 @@ class StatusBarController: NSObject, NSMenuDelegate {
         DispatchQueue.main.async { [weak alert] in
             alert?.window.makeFirstResponder(recorder)
         }
-        alert.runModal()
+        alert.runModalInFront()
         KeyboardShortcuts.enable(.previewSelectedVideo)
     }
 
@@ -278,13 +271,14 @@ class StatusBarController: NSObject, NSMenuDelegate {
         Up/Down arrows: Navigate videos
         P: Toggle Purple tag
         Delete: Move to Trash (when enabled)
+        Cmd+Z: Undo Move to Trash
         Escape: Close preview
 
         Requires mpv: brew install mpv
         """
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
-        alert.runModal()
+        alert.runModalInFront()
     }
 
     @objc private func quitApp() {
@@ -314,5 +308,26 @@ class StatusBarController: NSObject, NSMenuDelegate {
             nowPlayingItem?.title = "Not playing"
             revealItem?.isEnabled = false
         }
+    }
+}
+
+// MARK: - Alerts from a Dock-less app
+
+extension NSAlert {
+    /// Run the alert from a Dock-less (LSUIElement) app. Such an app is never
+    /// frontmost, so a bare `runModal()` can open the panel behind the
+    /// frontmost app's windows with no key focus — request activation first
+    /// and keep the panel floating. Activation is only a request on macOS
+    /// 14+, so the floating level is what keeps the alert visible if it is
+    /// declined.
+    @discardableResult
+    func runModalInFront() -> NSApplication.ModalResponse {
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        window.level = .floating
+        return runModal()
     }
 }

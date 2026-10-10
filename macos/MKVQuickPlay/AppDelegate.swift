@@ -5,12 +5,13 @@ import Sparkle
 extension KeyboardShortcuts.Name {
     /// Global hotkey to preview the current Finder selection. User-recordable
     /// via the menu; works even when the Services shortcut is flaky.
-    static let previewSelectedVideo = Self("previewSelectedVideo", default: .init(.v, modifiers: [.command, .shift]))
+    static let previewSelectedVideo = Self("previewSelectedVideo", initial: .init(.v, modifiers: [.command, .shift]))
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
 
-    /// How long Finder needs to finish activating before focus returns to mpv.
+    /// How long Finder needs to finish activating before focus returns to mpv
+    /// (fallback path only — see `followInFinder`).
     private static let finderRefocusDelay: TimeInterval = 0.15
 
     // UI Controllers
@@ -178,11 +179,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showAutomationDeniedHint() {
-        if #available(macOS 14.0, *) {
-            NSApp.activate()
-        } else {
-            NSApp.activate(ignoringOtherApps: true)
-        }
         let alert = NSAlert()
         alert.messageText = "Finder Access Needed"
         alert.informativeText = """
@@ -195,8 +191,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "OK")
-        alert.window.level = .floating
-        if alert.runModal() == .alertFirstButtonReturn,
+        if alert.runModalInFront() == .alertFirstButtonReturn,
            let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation") {
             NSWorkspace.shared.open(url)
         }
@@ -229,6 +224,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        // A new session: drop symlink resolutions cached for the previous one.
+        finderSelectionManager.resetPathCache()
+
         // Start playback immediately with a provisional (alphabetical) playlist…
         let provisional: [URL]
         let startURL: URL
@@ -255,8 +253,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self = self, self.sessionID == session else { return }
             guard let folderOrder = folderOrder, !folderOrder.isEmpty else { return }
             if selected.count > 1 {
+                // The folder order only covers the invoked file's folder; a
+                // selection spanning folders (search results, a tag view)
+                // keeps its provisional order rather than shrinking to the
+                // subset that happens to live there.
                 let scoped = folderOrder.filter { selectionKeys.contains(self.finderSelectionManager.normalizedPath($0)) }
-                if !scoped.isEmpty { self.navigationPlaylist = scoped }
+                if scoped.count == selectionKeys.count { self.navigationPlaylist = scoped }
             } else {
                 self.navigationPlaylist = folderOrder
             }
@@ -300,16 +302,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // must not match a later re-invocation as a "toggle closed".
         currentSelectionKeys = nil
         statusBarController.setCurrentFile(url)
-        revealAndRefocus(url)
+        followInFinder(url)
         showPositionOSD(for: url, in: playlist)
     }
 
-    /// Move the Finder highlight to follow the playing video, then return
-    /// focus to mpv so keyboard navigation keeps working.
-    private func revealAndRefocus(_ url: URL) {
-        NSWorkspace.shared.activateFileViewerSelecting([url])
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.finderRefocusDelay) {
-            MPVLauncher.shared.activateWindow()
+    /// Move the Finder highlight to follow the playing video.
+    ///
+    /// Finder is asked to `reveal` the file over the Automation channel with
+    /// no `activate`, so the mpv window never loses keyboard focus. The old
+    /// approach — activate Finder via NSWorkspace, then ask macOS to hand
+    /// focus back to mpv 150 ms later — depends on an activation request
+    /// that a Dock-less background app can't guarantee under macOS 14+ (and
+    /// that macOS 26/27 declines more often); when it was declined, every
+    /// following arrow key went to Finder instead of the player. That path
+    /// is kept only as the fallback for when Finder can't be scripted.
+    private func followInFinder(_ url: URL) {
+        finderSelectionManager.revealInFinder(url) { [weak self] revealed in
+            guard let self = self, !revealed else { return }
+            // Fallback — but only if this file is still the one playing.
+            guard let current = self.currentPreviewURL,
+                  self.finderSelectionManager.normalizedPath(current) == self.finderSelectionManager.normalizedPath(url)
+            else { return }
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.finderRefocusDelay) {
+                MPVLauncher.shared.activateWindow()
+            }
         }
     }
 
@@ -375,7 +392,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             currentPreviewURL = successor
             currentSelectionKeys = nil // playing file diverged from the invoking selection
             statusBarController.setCurrentFile(successor)
-            revealAndRefocus(successor)
+            followInFinder(successor)
             MPVLauncher.shared.showText("Moved to Trash\n\(current.lastPathComponent)")
         } else {
             // No successor, or the player is already gone — close the preview.
@@ -393,6 +410,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             undoStack.removeLast()
             statusBarController.setLastTrashedName(undoStack.last?.original.lastPathComponent)
             MPVLauncher.shared.showText("Undo unavailable — file is no longer in the Trash")
+            return
+        }
+
+        // Likewise if the folder it came from is gone (renamed, deleted, or
+        // on a volume that was ejected): nothing can ever restore it there,
+        // and keeping the entry would block every older undo behind it.
+        let originalFolder = entry.original.deletingLastPathComponent()
+        guard FileManager.default.fileExists(atPath: originalFolder.path) else {
+            undoStack.removeLast()
+            statusBarController.setLastTrashedName(undoStack.last?.original.lastPathComponent)
+            MPVLauncher.shared.showText("Undo unavailable — original folder is gone (file left in Trash)")
+            NSLog("[MKVQuickPlay] Undo skipped: \(originalFolder.path) no longer exists")
             return
         }
 
@@ -424,11 +453,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Reopen the restored file (relaunching mpv here is intentional —
-        // undo should work even after the preview was closed).
+        // undo should work even after the preview was closed). The OSD is
+        // queued until the player's control channel is up if it had to relaunch.
         playVideo(url: entry.original, revealInFinder: true)
         MPVLauncher.shared.showText("Restored\n\(entry.original.lastPathComponent)")
     }
 
+    /// Menu action: the user explicitly wants to see the file in Finder, so
+    /// here activating Finder is the point.
     private func revealCurrentInFinder() {
         guard let current = currentPreviewURL else { return }
         NSWorkspace.shared.activateFileViewerSelecting([current])
@@ -476,16 +508,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         \u{2022} Down arrow: Next video
         \u{2022} Up arrow: Previous video
         \u{2022} P: Toggle Purple tag
+        \u{2022} Delete: Move to Trash (when enabled in the menu)
+        \u{2022} Cmd+Z: Undo Move to Trash
         \u{2022} Escape or Q: Close preview
         \u{2022} Space: Pause/Resume
         \u{2022} Left/Right: Seek
 
-        To customize the keyboard shortcut:
-        System Settings > Keyboard > Keyboard Shortcuts > Services
+        To change the shortcut, use "Set Keyboard Shortcut…" in this menu.
         """
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
-        alert.runModal()
+        alert.runModalInFront()
     }
 
     // MARK: - Application Lifecycle
@@ -531,7 +564,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusBarController.setCurrentFile(url)
 
         if revealInFinder {
-            revealAndRefocus(url)
+            followInFinder(url)
         }
     }
 }

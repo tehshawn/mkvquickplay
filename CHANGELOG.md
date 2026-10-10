@@ -2,6 +2,70 @@
 
 All notable changes to MKV QuickPlay are documented here.
 
+## [2.5.1]
+
+### Fixed
+- **Navigation keys went dead after the app had been running for a few
+  days** — the arrows, `Delete`, `P`, `Esc`, `Q` and `Space` all stopped
+  working in the player until MKV QuickPlay was quit and reopened. The custom
+  key bindings mpv needs were written once, at app launch, into the system's
+  temporary folder, which macOS quietly sweeps of files older than three days.
+  After that, every player window started with no key bindings at all (and
+  mpv's complaint went to `/dev/null`). The bindings now live in
+  `~/Library/Application Support/MKVQuickPlay/`, are rewritten before every
+  player launch, and are additionally installed over the control channel once
+  it connects — so a session can never be left keyless again. mpv's warnings
+  and errors are now forwarded to the system log (Console.app, search for
+  `[mpv]`) so a recurrence of this class of problem leaves evidence.
+- **Finder's selection now follows the playing video without stealing focus
+  from the player.** Previously Finder was activated to move the highlight and
+  macOS was then asked to hand focus back to mpv — a request a background app
+  can't guarantee under the macOS 14+ cooperative-activation rules, and one
+  macOS 26/27 declines more often, after which every arrow key went to Finder
+  instead of the player. Finder is now told to reveal the file over the
+  existing Automation channel with no activation; the old activate-and-refocus
+  dance remains only as a fallback when Finder can't be scripted.
+- The player window is checked for keyboard focus once its control channel
+  opens, and activation is requested on its behalf if macOS declined mpv's
+  own request; a refusal is now logged instead of failing silently.
+- **Set Keyboard Shortcut… works again on macOS 26/27**: the shortcut recorder
+  (from the KeyboardShortcuts library) didn't capture key presses and its ✕
+  button did nothing on Tahoe and Golden Gate; updated to KeyboardShortcuts
+  3.1.0, which fixes this.
+- A large Finder selection (hundreds of files) could deadlock the hotkey for
+  30 seconds: the selection query's output is now drained while the script
+  runs instead of after it exits, and a script that ignores termination is
+  force-killed so it can never wedge the hotkey for the rest of the session.
+- Declining the Automation permission used to disable Finder-order navigation
+  until relaunch even after re-enabling it in System Settings; it now recovers
+  on the next successful query.
+- A multi-file selection spanning several folders (search results, a tag view)
+  no longer shrinks to the files in the first file's folder once Finder's sort
+  order is applied.
+- The sort query no longer borrows the front Finder window's sort when no
+  window shows the video's folder; it falls back to alphabetical as documented.
+- Undo Move to Trash no longer wedges on a file whose original folder is gone
+  (renamed, deleted, ejected volume) — the entry is dropped with an explanation
+  so older undos stay reachable.
+- A second instance of the app no longer deletes a running instance's live
+  control socket on startup.
+- Re-invoking the preview while the player was still starting up used to kill
+  and relaunch it; commands are now queued and delivered once the control
+  channel opens (this also makes the "Restored" message after an undo appear
+  when the player had to be relaunched).
+- Alerts from the menu ("How to Use…", "About") now request activation before
+  appearing so they can't open behind other windows.
+- Updated Sparkle to 2.10.0 (security hardening in 2.9.5/2.9.6 and macOS 27
+  fixes).
+
+### Changed
+- The app keeps itself out of App Nap only while a player window is open, so
+  its timers aren't coalesced mid-session.
+- Help text now lists `Cmd+Z` and points to "Set Keyboard Shortcut…" in the
+  menu instead of the Services pane of System Settings.
+- Building from source now requires Xcode 26 or later (KeyboardShortcuts 3.x
+  is a Swift 6.2 package).
+
 ## [2.5.0]
 
 ### Changed

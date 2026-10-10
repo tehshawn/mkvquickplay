@@ -32,7 +32,7 @@ It pairs well with [QLVideo](https://github.com/Marginal/QLVideo) — use that f
 - **Cull Quickly**: Optionally enable *Move to Trash with Delete Key* in the menu to weed through footage — `Delete` trashes the current video and jumps to the next.
 - **Remembers Volume**: Your last volume and mute setting carry over between videos and launches.
 - **Toggle Playback**: Press the shortcut again to close, or press `Escape`
-- **Minimal Permissions**: Uses macOS Services for previewing — no permissions needed. The first time you navigate a folder, macOS asks for permission to control Finder (used only to read the current sort order); decline it and navigation falls back to alphabetical order.
+- **Minimal Permissions**: One permission, asked once — the first time you use the shortcut, macOS asks for permission to control Finder (used to read your selection and the current sort order, and to keep the Finder highlight on the playing video). Decline it and the Finder > Services menu entry still works, with alphabetical navigation.
 - **Minimal UI**: Runs quietly in the menu bar with no Dock icon; optional *Launch at Login*
 - **Native Performance**: Uses mpv for fast, high-quality video playback
 - **Open With Support**: Right-click any video file > Open With > MKV QuickPlay
@@ -74,7 +74,7 @@ Grab the latest **notarized** build from the [Releases page](https://github.com/
 
 ### Build from Source
 
-**Requirements**: Xcode (free from App Store) and Command Line Tools
+**Requirements**: Xcode 26 or later (free from the App Store) and Command Line Tools
 
 ```bash
 # Clone the repository
@@ -137,6 +137,9 @@ Install mpv using `brew install mpv`
 
 ### No video plays
 Make sure a video file is selected (clicked) in Finder before pressing the shortcut
+
+### Keys don't work in the player window
+Versions before 2.5.1 could lose their key bindings after the app had been running for a few days (quitting and reopening fixed it). Update to 2.5.1 or later. If it still happens, open Console.app, search for `[mpv]` or `MKVQuickPlay`, and include those lines in a bug report.
 
 ## License
 
