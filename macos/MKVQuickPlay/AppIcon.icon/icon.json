@@ -1,0 +1,53 @@
+{
+  "fill-specializations": [
+    {
+      "value": {
+        "automatic-gradient": "srgb:0.15300,0.16900,0.19600,1.00000"
+      }
+    },
+    {
+      "appearance": "dark",
+      "value": {
+        "automatic-gradient": "srgb:0.10200,0.11400,0.13700,1.00000"
+      }
+    }
+  ],
+  "groups": [
+    {
+      "layers": [
+        {
+          "glass": true,
+          "image-name": "triangle.svg",
+          "name": "triangle"
+        },
+        {
+          "glass": true,
+          "image-name": "card-front.svg",
+          "name": "card-front"
+        },
+        {
+          "glass": true,
+          "image-name": "card-mid.svg",
+          "name": "card-mid"
+        },
+        {
+          "glass": true,
+          "image-name": "card-back.svg",
+          "name": "card-back"
+        }
+      ],
+      "name": "Stack",
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0.5
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": "shared"
+  }
+}
