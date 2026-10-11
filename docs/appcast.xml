@@ -3,39 +3,36 @@
   <channel>
     <title>MKV QuickPlay</title>
     <item>
-      <title>MKV QuickPlay 2.5.1</title>
-      <pubDate>Sun, 11 Oct 2026 16:34:31 +0000</pubDate>
-      <sparkle:version>13</sparkle:version>
-      <sparkle:shortVersionString>2.5.1</sparkle:shortVersionString>
+      <title>MKV QuickPlay 2.6.0</title>
+      <pubDate>Sun, 11 Oct 2026 22:46:24 +0000</pubDate>
+      <sparkle:version>14</sparkle:version>
+      <sparkle:shortVersionString>2.6.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
       <description><![CDATA[
-        <h2>MKV QuickPlay 2.5.1</h2>
-        <h3>Fixed</h3>
+        <h2>MKV QuickPlay 2.6.0</h2>
+        <h3>Added</h3>
 <ul>
-<li><b>Navigation keys went dead after the app had been running for a few days</b> — the arrows, <code>Delete</code>, <code>P</code>, <code>Esc</code>, <code>Q</code> and <code>Space</code> all stopped working in the player until MKV QuickPlay was quit and reopened. The custom key bindings mpv needs were written once, at app launch, into the system's temporary folder, which macOS quietly sweeps of files older than three days. After that, every player window started with no key bindings at all (and mpv's complaint went to <code>/dev/null</code>). The bindings now live in <code>~/Library/Application Support/MKVQuickPlay/</code>, are rewritten before every player launch, and are additionally installed over the control channel once it connects — so a session can never be left keyless again. mpv's warnings and errors are now forwarded to the system log (Console.app, search for <code>[mpv]</code>) so a recurrence of this class of problem leaves evidence.</li>
-<li><b>Finder's selection now follows the playing video without stealing focus from the player.</b> Previously Finder was activated to move the highlight and macOS was then asked to hand focus back to mpv — a request a background app can't guarantee under the macOS 14+ cooperative-activation rules, and one macOS 26/27 declines more often, after which every arrow key went to Finder instead of the player. Finder is now told to reveal the file over the existing Automation channel with no activation; the old activate-and-refocus dance remains only as a fallback when Finder can't be scripted.</li>
-<li>The player window is checked for keyboard focus once its control channel opens, and activation is requested on its behalf if macOS declined mpv's own request; a refusal is now logged instead of failing silently.</li>
-<li><b>Set Keyboard Shortcut… works again on macOS 26/27</b>: the shortcut recorder (from the KeyboardShortcuts library) didn't capture key presses and its ✕ button did nothing on Tahoe and Golden Gate; updated to KeyboardShortcuts 3.1.0, which fixes this.</li>
-<li>A large Finder selection (hundreds of files) could deadlock the hotkey for 30 seconds: the selection query's output is now drained while the script runs instead of after it exits, and a script that ignores termination is force-killed so it can never wedge the hotkey for the rest of the session.</li>
-<li>Declining the Automation permission used to disable Finder-order navigation until relaunch even after re-enabling it in System Settings; it now recovers on the next successful query.</li>
-<li>A multi-file selection spanning several folders (search results, a tag view) no longer shrinks to the files in the first file's folder once Finder's sort order is applied.</li>
-<li>Undo Move to Trash no longer wedges on a file whose original folder is gone (renamed, deleted, ejected volume) — the entry is dropped with an explanation so older undos stay reachable.</li>
-<li>A second instance of the app no longer deletes a running instance's live control socket on startup.</li>
-<li>Re-invoking the preview while the player was still starting up used to kill and relaunch it; commands are now queued and delivered once the control channel opens (this also makes the "Restored" message after an undo appear when the player had to be relaunched).</li>
-<li>Alerts from the menu ("How to Use…", "About") now request activation before appearing so they can't open behind other windows.</li>
-<li>Updated Sparkle to 2.10.0 (security hardening in 2.9.5/2.9.6 and macOS 27 fixes).</li>
+<li><b>Shortcuts, Siri &amp; Spotlight support.</b> Seven actions — <b>Preview Videos</b>, <b>Next/Previous Video</b>, <b>Move Current Video to Trash</b>, <b>Toggle Purple Tag</b>, <b>Stop Preview</b> and <b>Review Folder</b> — now appear in the Shortcuts app and in Spotlight on macOS 26+, and all but Review Folder can be invoked by Siri ("Next video in MKV QuickPlay"). The <b>Preview Videos</b> action accepts files from other shortcuts or uses the current Finder selection when run bare.</li>
+<li><b>Finder Quick Action.</b> Build a one-action shortcut around <b>Preview Videos</b> and enable it as a Quick Action to get MKV QuickPlay in Finder's right-click Quick Actions menu — recipe in the README.</li>
+<li><b>Watch folders.</b> Point the app at your ingest folders (menu bar → <b>Watch Folders</b> → <b>Add Folder…</b>) and newly arrived videos are offered for review: a notification plus a count on the menu bar icon, one click to step through just the new files. Files still being copied are never offered — arrivals must settle first — and videos already in a folder when you add it don't count as new. Works across volume unmounts, remounts and sleep.</li>
 </ul>
-<h3>Changed</h3>
+<h3>Fixed</h3>
 <ul>
-<li>Videos previewed from the Desktop, or from a search, Recents or Tags window, now navigate (Up/Down) in alphabetical order. Previously the player borrowed the sort of whichever Finder window happened to be in front — one unrelated to the video's folder — so the order could be unexpected. Open the video's folder in a Finder window to navigate in that window's sort order.</li>
-<li>The menu, tooltip, help and About text show the shortcut you actually have set rather than the factory default.</li>
-<li>The app keeps itself out of App Nap only while a player window is open, so its timers aren't coalesced mid-session.</li>
-<li>Help text now lists <code>Cmd+Z</code> and points to "Set Keyboard Shortcut…" in the menu instead of the Services pane of System Settings.</li>
-<li>Building from source now requires Xcode 26 or later (KeyboardShortcuts 3.x is a Swift 6.2 package).</li>
+<li>Opening a video <b>while the app wasn't running</b> (double-click / Open With) crashed on launch; the files now open once the app finishes starting.</li>
+<li>The keyboard shortcut silently did nothing on <b>large Finder selections</b> (a few hundred files or more). Reading the selection is now ~30× faster, handles 1000+ files in about a second, and explains itself if Finder ever fails to answer instead of staying silent.</li>
+<li><b>Icon view</b> folders sorted by Date or Size navigated in exactly the wrong direction (oldest/smallest first); they now match what Finder shows.</li>
+<li>A trash keypress delivered during a session switch could act on the <b>next</b> session's video; stale player events are now discarded.</li>
+<li>Trashing or undoing immediately after a preview opened could be undone by the background Finder-sort refresh (a trashed file reappearing in the playlist); the stale refresh is now discarded.</li>
+<li>Previewing a hidden (dot-named) or symlinked video left the arrows dead and made Delete close the preview instead of advancing.</li>
+<li>Alerts shown while a video was playing (About, How to Use, the shortcut recorder) swallowed every subsequent player key until the mpv window was clicked; key focus now returns to the player automatically.</li>
+<li>Undoing a trash then pressing the shortcut again on the same selection wrongly closed the preview.</li>
+<li>Holding the arrow keys through very long culling runs could exhaust file descriptors (stray cleanup watchdogs); file handles are now released immediately.</li>
+<li>A filename containing a newline, or containing "-1743", could corrupt selection parsing or wrongly latch the "Automation denied" state.</li>
+<li>Release tooling: a forgotten build-number bump used to publish an update Sparkle would never offer; the release scripts now refuse it, reject unknown flags, and verify the GitHub release exists before updating the Homebrew cask or appcast.</li>
 </ul>
-        <p><a href="https://github.com/tehshawn/mkvquickplay/releases/tag/v2.5.1">Full release on GitHub</a></p>
+        <p><a href="https://github.com/tehshawn/mkvquickplay/releases/tag/v2.6.0">Full release on GitHub</a></p>
       ]]></description>
-      <enclosure url="https://github.com/tehshawn/mkvquickplay/releases/download/v2.5.1/MKVQuickPlay-macOS-v2.5.1.zip" sparkle:edSignature="X+YWixtaBRnQwKR5ysEAMnbrwQGZw4tsujt8melfWs++h99jfvcp66i3CFLCsLaEXPGNQXaYfFAcUL8ucld/DA==" length="2915576" type="application/octet-stream"/>
+      <enclosure url="https://github.com/tehshawn/mkvquickplay/releases/download/v2.6.0/MKVQuickPlay-macOS-v2.6.0.zip" sparkle:edSignature="+q+DpsXf7HYBH6jBkNnKoU5bmdljXrFNV4hrdsSfTCX44vXTrpWnN4793DfFk7EnENWnXaHwBWCkrN3NCnqaCQ==" length="3046078" type="application/octet-stream"/>
     </item>
   </channel>
 </rss>
