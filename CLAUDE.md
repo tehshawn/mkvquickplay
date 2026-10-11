@@ -1,81 +1,238 @@
 # MKV QuickPlay — project notes
 
-macOS-only menu bar app for quick video preview via mpv. Source lives in `macos/`.
-The app drives a single persistent mpv window over its JSON IPC socket
-(`NSTemporaryDirectory()/mkvquickplay-<pid>-<n>.sock`, where `<pid>` is the
-app's own pid and `<n>` a per-launch counter — the per-user temp dir under
-`/var/folders/...`, not world-readable `/tmp`; the startup sweep deletes
-leftover sockets except those whose `<pid>` is still running); navigation /
-trash / undo keys are mpv `script-message`s delivered back as `client-message`
-IPC events.
+macOS-only menu bar app (LSUIElement, AppKit/Swift) for QuickLook-style video
+preview and folder culling from Finder. Source lives in `macos/`.
 
-Runtime files: the mpv key-bindings file is rewritten before every player
-launch at `~/Library/Application Support/MKVQuickPlay/input.conf` (never in
-the temp dir — macOS purges `$TMPDIR` files not accessed for 3 days, which
-once left sessions with no keys) and the same bindings are re-sent over IPC
-with `keybind` on connect. mpv's stderr is forwarded to the system log with
-an `[mpv]` prefix (bounded per launch).
+It launches an external **mpv** (Homebrew/MacPorts — located by probing a fixed
+list in `findMPV()`, no PATH lookup) and drives **one persistent player window**
+over mpv's JSON IPC socket. Navigating loads the next file into the same window
+(`loadfile … replace`) rather than relaunching. Entry points: an **NSServices**
+item (Finder ▸ Services, zero permissions) and a **global hotkey**
+(KeyboardShortcuts, default ⇧⌘V, user-recordable) which reads the Finder
+selection and therefore needs the **Automation** permission.
+
+Deployment target is **macOS 13.0**; `#available(macOS 14, *)` fallbacks exist
+throughout for that reason. Build requires **Xcode 26+**.
+
+## Invariants — break these and the app misbehaves subtly
+
+### IPC / player (`MPVLauncher.swift`)
+- **`generation` is the one invalidation token.** Bumped by both
+  `connectSocket()` and `teardownSocket()`, guarded by `stateLock`. *Every*
+  async IPC actor must capture its generation and pass it back
+  (`attemptConnect(generation:)`, `startReading(fd:generation:)`,
+  `teardownSocket(ifGeneration:)`, `writeNow(_:generation:)`). Omitting it lets
+  a dying player's EOF or late write tear down the **successor** session's
+  channel — the session silently loses all keys.
+- **Threading contract (convention only, not enforced by types):**
+  - *ioQueue owns*: `socketFD`, `readSource`, `readBuffer`, `pendingCommands`,
+    `pendingVolume`, `pendingMute`, `prefsFlushScheduled`
+  - *main thread owns*: `mpvProcess`, `currentSocketPath`, `launchCounter`,
+    `sessionActivity`
+  - *`stateLock` guards*: `generation`, `connected`, `connecting`, `launchConnect`
+  - **ioQueue must never block on main.** `flushPrefsForTermination()` does
+    `ioQueue.sync` from `applicationWillTerminate`; any main-sync from ioQueue
+    deadlocks termination. All IPC callbacks hop with `.async`.
+- **The `keyBindings` table is the entire keyboard surface** — mpv runs with
+  `--no-input-default-bindings`, so *every* key (including SPACE/←/→/m/f/ESC/q)
+  comes from that table. It is installed **twice**: written to
+  `~/Library/Application Support/MKVQuickPlay/input.conf` before every launch
+  (temp dir only as a last-resort fallback) **and** re-sent as `keybind`
+  commands on connect. Five keys emit `script-message`s whose names must stay in
+  sync with the `client-message` switch in `processBuffer()`:
+  `mkvqp-next` (↓), `mkvqp-prev` (↑), `mkvqp-trash` (BS/DEL),
+  `mkvqp-undo` (⌘Z), `mkvqp-tag` (P). Adding a script-message without a
+  `processBuffer` case silently drops it.
+  *History:* the file used to be written once into `$TMPDIR`, which macOS purges
+  of files untouched for 3 days — after a few days in the menu bar every player
+  opened with **no keys at all**. The IPC re-install is the real safety net.
+- **Commands issued before the channel opens are queued** (bounded FIFO of 16,
+  oldest evicted) and flushed inline after the keybind/`observe_property` setup
+  writes, in one ioQueue block. This is why re-invoking during a cold start no
+  longer kills and relaunches the player.
+- `play()` uses `canAcceptCommands` (one lock acquisition, not two property
+  reads); `load()` deliberately uses the stricter `isPlaying && isConnected` so
+  navigation can never resurrect a player the user just closed.
+- Self-heal: `reconnectIfPlayerAlive()` reopens the channel if it drops while
+  mpv runs; `attemptConnect` patrols ~2 min (60×50ms then 240×500ms).
+- SIGPIPE is suppressed twice on purpose (`signal(SIGPIPE, SIG_IGN)` **and**
+  `SO_NOSIGPIPE` per fd) — a write to a peer-closed socket would otherwise kill
+  the whole app when mpv exits mid-command.
+- Load-bearing mpv args: `--force-window=immediate` (IPC server must exist
+  before decode), `--keep-open=yes` (EOF must not quit mpv), `--autofit-larger=90%x90%`
+  + `--auto-window-resize=yes` (native size), `--msg-level=all=warn` with stderr
+  forwarded to the system log as `[mpv]` (bounded per launch — mpv blocks on a
+  full stderr pipe, and this being `/dev/null` is how the keyless bug hid).
+- Volume/mute: `observe_property` → 0.5s coalesced flush → UserDefaults
+  `mkvqp.volume` / `mkvqp.mute` → restored as launch args.
+
+### Finder integration (`FinderSelectionManager.swift`, `AppDelegate.swift`)
+- **Always shell out to `/usr/bin/osascript`; never `NSAppleScript`** (it is
+  main-thread bound and blocks unboundedly on the TCC consent prompt). Three
+  safety mechanics are load-bearing: in-script `with timeout of 3 seconds`;
+  **both pipes drained before `waitUntilExit()`** (a 64 KB buffer fills on a
+  large selection and deadlocks); a 30 s SIGTERM → +2 s SIGKILL watchdog.
+- **Reveal without activation.** Following the playing file uses Finder's
+  `reveal` with **no** `activate`, so mpv keeps keyboard focus. The old
+  `activateFileViewerSelecting` + refocus dance is only a fallback (failures
+  newer than 2 s, file still current). Reverting to activate-and-refocus sends
+  every arrow key to Finder on macOS 26/27, where the activation request is
+  declined more often.
+- `pathCache` / `normalizedPath` / `index(of:)` / `nextFile` / `previousFile`
+  are **main-thread-only and unsynchronized**. Calling them inside a
+  `queryQueue` / `revealQueue` block (the natural refactor) is an unsynchronized
+  Dictionary mutation across threads.
+- Automation denial (`-1743`) sets a latch that gates **only** reveal; the cheap
+  queries are still attempted, and any success clears the latch — so re-enabling
+  the permission in System Settings recovers on the next preview, no relaunch.
+- **Sort emulation fallback matrix.** Finder's order is mirrored only when an
+  open window's `target` is that exact folder, and only for list view
+  (name/kind/modified/created/size) and icon view (same five). Everything else —
+  Desktop, search results, Recents, Tags, smart folders, no window,
+  **column view, gallery view**, unmapped columns (Date Added…) — falls back to
+  alphabetical. Column view *succeeds* and returns the default, so "sort is
+  wrong" there is not a script failure. `reversed` applies to the primary key
+  only; the filename tiebreak stays ascending.
+- Playlist: playback starts on a provisional alphabetical list, refined
+  asynchronously under a `sessionID` guard (`clearPreviewState()` bumps it, so a
+  late result can't revive a closed preview). Multi-file selections are refined
+  only when every file shares the invoked file's folder.
+- Trash/undo: Delete is a silent no-op unless `mkvqp.trashEnabled` is on
+  (default off). Undo re-inserts at the remembered index only while
+  `entry.sessionID == sessionID`. The P key writes tags via
+  `(url as NSURL).setResourceValue(_:forKey: .tagNamesKey)` — the Swift
+  `URLResourceValues.tagNames` **setter is macOS 26+** and would break the 13.0 target.
+
+### UI (`StatusBarController.swift`)
+- **Every NSAlert must go through `NSAlert.runModalInFront()`** (activate +
+  `window.level = .floating`). LSUIElement apps are never frontmost, so a bare
+  `runModal()` can open behind other windows with no key focus — the app just
+  looks hung.
+- **KeyboardShortcuts is MainActor-isolated but the target is `SWIFT_VERSION = 5.0`**,
+  so the compiler will *not* diagnose a call from a background queue — the only
+  enforcement is a runtime trap. Reads go through
+  `MainActor.assumeIsolated { … }`. Note `NSMenuDelegate.menuWillOpen` is *not*
+  MainActor-isolated.
+- Shortcut display derives from the stored shortcut and is `Optional` **by
+  design** — nil means the user cleared it. Never add a `?? "⇧⌘V"` fallback; it
+  would advertise a hotkey that isn't bound.
+- The recorder is an NSAlert accessory view. `KeyboardShortcuts.disable(…)`
+  before and `.enable(…)` after are required (the global hotkey is otherwise
+  armed while recording), as is the async `makeFirstResponder` hop.
+- `menu.autoenablesItems = false` — all enabled/checked state is hand-managed,
+  and `menuWillOpen` re-reads `SMAppService.mainApp.status` (System Settings can
+  toggle it behind the app's back).
+- The menu bar icon is **drawn in code** (`makeMenuBarIcon()`, flipped
+  coordinate space — y grows downward). `isTemplate = true` is what makes the
+  blue "playing" tint and light/dark adaptation work; there is no asset to find.
 
 ## Building (dev)
 
-Requires Xcode 26 or later (KeyboardShortcuts 3.x is a Swift 6.2 package;
-its public API is MainActor-isolated, so call it only from main-thread
-contexts — delegate methods or `@MainActor`-annotated methods).
+Requires **Xcode 26+** (KeyboardShortcuts 3.x is a Swift 6.2 package).
 
 ```bash
 cd macos
 xcodebuild -project MKVQuickPlay.xcodeproj -scheme MKVQuickPlay -configuration Release build
 ```
 
+Dependencies (SwiftPM, pinned `upToNextMajorVersion`, see `Package.resolved`):
+- **KeyboardShortcuts 3.1.0** — floor is hard: earlier versions' recorder does
+  not capture keys and its ✕ does nothing on macOS 26/27.
+- **Sparkle 2.10.0** — auto-updates.
+
 ## Releasing (REQUIRED process for every update)
 
-Every public update must be **Developer ID-signed and notarized** so it downloads
-and runs without Gatekeeper warnings. Do NOT publish a development-signed build.
+Every public update must be **Developer ID-signed and notarized**. Never publish
+a development-signed build.
 
-Steps for each release:
-1. Make the code changes.
-2. Bump `CFBundleShortVersionString` (and `CFBundleVersion`) in
-   `macos/MKVQuickPlay/Info.plist`.
-3. Add a section to `CHANGELOG.md`.
-4. Commit (and push).
-5. Run the release pipeline — it builds, signs with Developer ID, notarizes,
-   staples, and creates/uploads the GitHub release asset:
+1. Make the changes.
+2. Bump **both** `CFBundleShortVersionString` *and* `CFBundleVersion` in
+   `macos/MKVQuickPlay/Info.plist`. Sparkle compares **build numbers**, so a
+   release without a `CFBundleVersion` bump is never offered as an update.
+   ⚠️ `Info.plist` is the **only** live version source (`GENERATE_INFOPLIST_FILE = NO`).
+   The pbxproj's `MARKETING_VERSION = 1.0.0` / `CURRENT_PROJECT_VERSION = 1` are
+   dead decoys — bumping them in Xcode's UI changes nothing.
+3. Add a `CHANGELOG.md` section. The heading must be bracketed — `## [2.5.1]` —
+   or the appcast release notes come out empty.
+4. Commit **and push** (the release refuses a dirty or unpushed tree).
+5. `scripts/release.sh`
 
-   ```bash
-   scripts/release.sh
-   ```
+Flags: `--no-publish` (build + notarize only, skips all guards — for mid-dev
+testing) and `--force` (allows re-releasing an existing tag). ⚠️ `--force`
+uploads new binaries but leaves the tag pointing at the **old** commit.
 
-The release tag/version comes from `Info.plist`, so step 2 drives everything.
-IMPORTANT: bump `CFBundleVersion` too — Sparkle compares build numbers, so a
-release without a build-number bump will never be offered as an update.
+Publish-path guards, in order: clean tree → HEAD pushed to upstream → tag does
+not already exist.
 
-`release.sh` also:
-- generates and pushes the Sparkle appcast (`docs/appcast.xml`, served via
-  GitHub Pages at https://tehshawn.github.io/mkvquickplay/appcast.xml). The
-  zip is signed with `sign_update` using the EdDSA private key stored in the
-  login keychain (created once via Sparkle's `generate_keys`; public key lives
-  in Info.plist as `SUPublicEDKey`). Sparkle's CLI tools resolve from the
-  SwiftPM artifacts under DerivedData.
-- runs `scripts/update-cask.sh`, which bumps the Homebrew cask (version +
-  sha256, and ensures `auto_updates true`) in the `tehshawn/homebrew-tap` repo
-  so `brew install --cask tehshawn/tap/mkvquickplay` stays current.
+After upload the pipeline runs `scripts/update-cask.sh` then
+`scripts/update-appcast.sh`, and **both are failure-tolerant** — `release.sh`
+can print "Done." having published a binary with a stale cask and/or no appcast
+entry. Check its output. Recovery = re-run the sub-script by hand **while
+`build/release/` still exists** (the next `release.sh` deletes it).
 
-Dependencies (SwiftPM, declared in the Xcode project): `KeyboardShortcuts`
-(global recordable hotkey) and `Sparkle` (auto-updates).
+- `update-appcast.sh` rewrites `docs/appcast.xml` with exactly **one** `<item>`
+  (no version history), signs the zip with the EdDSA key from the login
+  keychain, and **commits + pushes by itself** with a bare `git commit` of the
+  whole index — don't leave unrelated files staged when running it.
+  `<sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>` is
+  hardcoded there and duplicates `MACOSX_DEPLOYMENT_TARGET`; raise both or neither.
+- `update-cask.sh` bumps the `tehshawn/homebrew-tap` cask (version + sha256) and
+  gates `auto_updates true` on the *previously published* version being ≥ 2.4.0
+  (the first Sparkle build) so pre-Sparkle installs aren't stranded. Its
+  verification checks version/sha only, not the flag; it relies on exact
+  two-space cask indentation.
+- `release.sh` also uploads a **dSYM** asset, needed to symbolicate crash reports.
 
-### One-time setup (already configured certs aside)
+### One-time setup
 
-- Developer ID Application cert: "Developer ID Application: Shawn McEntyre (BVUHD2VQU7)".
-- Notarization credentials stored as a keychain profile named `MKVQuickPlay-Notary`:
+- Developer ID cert: "Developer ID Application: Shawn McEntyre (BVUHD2VQU7)".
+- **Notarization uses an App Store Connect API key**, stored as keychain profile
+  `MKVQuickPlay-Notary`:
 
   ```bash
-  xcrun notarytool store-credentials "MKVQuickPlay-Notary" \
-    --apple-id "<apple-id-email>" --team-id "BVUHD2VQU7" \
-    --password "<app-specific-password>"   # from appleid.apple.com
+  xcrun notarytool store-credentials "MKVQuickPlay-Notary"
+  # prompts for: path to AuthKey_XXXXXXXXXX.p8, Key ID, Issuer ID (UUID)
   ```
 
+  The `.p8` is **downloadable exactly once** and is not kept in this repo or on
+  disk (`store-credentials` copies the material into the keychain). If the
+  keychain item is lost, the key cannot be re-downloaded — mint a new one in
+  App Store Connect ▸ Users and Access ▸ Integrations and re-run the command.
+  Verify with `xcrun notarytool history --keychain-profile MKVQuickPlay-Notary`.
+- Sparkle's EdDSA **private key** lives in the login keychain; its public half is
+  `SUPublicEDKey` in Info.plist. Losing it means existing users can never be
+  updated again. The keychain ACL trusts `sign_update` **by absolute path** under
+  DerivedData, so a DerivedData wipe (or a differently-hashed path) triggers a
+  keychain prompt or an "appcast not generated" warning — run
+  `xcodebuild -resolvePackageDependencies` and re-run interactively.
 - `gh` CLI authenticated; remote is `tehshawn/mkvquickplay`.
 
-Notarization and timestamped signing require network access to Apple's servers,
-so `scripts/release.sh` must be run on the developer's Mac (not in a sandboxed
-environment without network).
+Notarization and timestamped signing need network access to Apple, so
+`scripts/release.sh` must run on the developer's Mac — **a cloud/sandboxed
+session cannot release.**
+
+## App icons — two pipelines, same name
+
+1. `macos/MKVQuickPlay/AppIcon.icon/` — Icon Composer document (`icon.json` +
+   4 SVG layers), the **macOS 26+ Liquid Glass** icon. Edit in Icon Composer.
+2. `macos/MKVQuickPlay/Assets.xcassets/AppIcon.appiconset/` — 10 flat PNGs for
+   **macOS 13–25**, regenerated with `swift scripts/icongen.swift <appiconset-dir>`.
+
+Both must stay committed: deleting the appiconset drops the icon on older
+macOS; a missing `AppIcon.icon` breaks the Resources build phase on a clean clone.
+
+## Repo traps
+
+- **`.gitignore` anchoring.** Line `/MKVQuickPlay*/` **must keep its leading
+  slash**. A pattern whose only slash is trailing matches the basename at *every*
+  level, so unanchored `MKVQuickPlay*/` also matched `macos/MKVQuickPlay/` — the
+  whole app source directory. The failure is silent: already-tracked files keep
+  working and `git status` stays clean, so only **newly added** files vanish.
+  This bit twice (`MKVQuickPlay*/`, and `*.xcworkspace` hiding
+  `project.xcworkspace/`, which holds `Package.resolved`) and is why
+  `AppIcon.icon/` went uncommitted for a whole release. After adding any new
+  file under `macos/`, confirm with `git status --ignored` that it isn't ignored.
+- `NSServices` in Info.plist declares `NSSendFileTypes = public.data`, so the
+  service appears for **every** file and video filtering happens in code
+  (`isVideoFile`). `NSMessage` must match the `@objc(previewVideo:userData:error:)`
+  selector and `NSPortName` the executable name.
