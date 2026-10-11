@@ -42,10 +42,14 @@ throughout for that reason. Build requires **Xcode 26+**.
   sync with the `client-message` switch in `processBuffer()`:
   `mkvqp-next` (↓), `mkvqp-prev` (↑), `mkvqp-trash` (BS/DEL),
   `mkvqp-undo` (⌘Z), `mkvqp-tag` (P). Adding a script-message without a
-  `processBuffer` case silently drops it. Client-messages are
-  **generation-checked again at delivery time on main** — a keypress event
-  queued behind a main-thread stall must not act on a successor session's
-  file (a late trash would delete the wrong video).
+  `processBuffer` case silently drops it. Client-messages are re-checked at
+  delivery time on main against **two tokens**: `generation` (catches a stale
+  read source after a channel rebuild) and **`inputEpoch`** (bumped by the app
+  on every preview-session *switch* — new invocation, batch review, close —
+  which `generation` cannot see, because switches reuse the window via
+  `loadfile … replace`). Within-session navigation must **not** bump the
+  epoch, or held-key culling drops its own queued keys. A keypress read
+  before a switch must never act on the successor session's file.
   *History:* the file used to be written once into `$TMPDIR`, which macOS purges
   of files untouched for 3 days — after a few days in the menu bar every player
   opened with **no keys at all**. The IPC re-install is the real safety net.
@@ -180,9 +184,19 @@ throughout for that reason. Build requires **Xcode 26+**.
   block ejecting the external SSDs these folders live on.
 - **Settle gate** before a file is offered: size+mtime stable across 2 polls
   AND ≥3 s event-quiet AND nonzero size (Finder shows a copy the moment it
-  *starts*, and arrivals feed a Delete-key workflow). Batches are offered
-  after 5 s of folder quiet and marked seen at offer time; adding a folder
-  seeds the seen-set silently (pre-existing videos are not "new").
+  *starts*, and arrivals feed a Delete-key workflow). A stable zero-byte stub
+  is dropped, never offered and never kept as a candidate (it would spin the
+  settle timer and block every batch offer). Batches are offered after 5 s of
+  folder quiet and marked seen **when taken for review**, not at offer time —
+  settled-but-unreviewed arrivals must survive a relaunch (the arm-time
+  reconcile re-offers them), and a failed review start restores the batch
+  (`restorePending`). An offered file that changes again is pulled from the
+  batch to re-settle. Adding a folder seeds the seen-set silently
+  (pre-existing videos are not "new"); a rename migrates the seen-set to the
+  new path, and `reconcile` refuses to run against a vanished folder (it
+  would prune everything). Event routing picks the **longest** matching watch
+  prefix (nested watch folders). Bookmark resolution always passes
+  `.withoutUI, .withoutMounting` — it runs on main from menuWillOpen.
 - Folders persist as bookmarks (`mkvqp.watchFolders` in UserDefaults);
   seen-sets live in Application Support `watch-seen.json`. An unresolvable
   folder goes dormant and re-arms on the next mount/wake.

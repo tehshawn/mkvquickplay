@@ -128,8 +128,9 @@ Click the menu bar icon → **Set Keyboard Shortcut…** and press any combinati
 
 MKV QuickPlay ships seven Shortcuts actions: **Preview Videos**, **Next
 Video**, **Previous Video**, **Move Current Video to Trash**, **Toggle Purple
-Tag**, **Stop Preview**, and **Review Folder**. They also respond to Siri
-("Next video in MKV QuickPlay") and appear in Spotlight on macOS 26 and later.
+Tag**, **Stop Preview**, and **Review Folder**. All but Review Folder also
+respond to Siri ("Next video in MKV QuickPlay"), and the actions appear in
+Spotlight on macOS 26 and later.
 
 Notes:
 

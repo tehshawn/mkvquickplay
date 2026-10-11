@@ -101,6 +101,13 @@ final class MPVLauncher {
     /// Whether the active connect chain belongs to a fresh launch (as opposed
     /// to a self-heal reconnect). Only meaningful while `connecting`.
     private var launchConnect = false
+    /// Session-identity token for input scoping, bumped by the app layer on
+    /// every preview-session switch. `generation` cannot see a switch that
+    /// reuses the window (`loadfile … replace` — the app's normal mode), so
+    /// without this a keypress read just before or during a switch's
+    /// main-thread stall would be delivered against the successor session's
+    /// file. stateLock-guarded.
+    private var inputEpochValue = 0
 
     // Latest observed player values, coalesced into UserDefaults (ioQueue-confined).
     private var pendingVolume: Double?
@@ -242,6 +249,20 @@ final class MPVLauncher {
     private var currentGeneration: Int {
         stateLock.lock(); defer { stateLock.unlock() }
         return generation
+    }
+
+    private var inputEpoch: Int {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return inputEpochValue
+    }
+
+    /// Called by the app on every preview-session switch (new invocation,
+    /// batch review, close) — never on within-session navigation, which must
+    /// keep delivering queued keys (held-arrow culling).
+    func bumpInputEpoch() {
+        stateLock.lock()
+        inputEpochValue += 1
+        stateLock.unlock()
     }
 
     /// Preview a video: load it into the running window, or (re)launch mpv.
@@ -639,14 +660,17 @@ final class MPVLauncher {
             switch event {
             case "client-message":
                 guard let name = (obj["args"] as? [String])?.first else { continue }
-                // Re-check the generation at delivery time, on main: a stale
-                // source draining buffered bytes after a session switch — or
-                // a keypress queued behind a long main-thread stall (the
-                // synchronous folder listing a new invocation does) — must
-                // never act on the *successor* session's file. A late trash
-                // keypress would delete a video the user never aimed it at.
+                // Two delivery-time checks on main. `gen` catches a stale
+                // read source draining bytes after the channel was rebuilt.
+                // `inputEpoch` catches what `gen` cannot: a session switch on
+                // the SAME channel (`loadfile … replace` — the app's normal
+                // mode), where a keypress read before or during the switch's
+                // main-thread stall would act on the successor session's
+                // file. A late trash would delete the wrong video.
+                let epoch = inputEpoch
                 DispatchQueue.main.async { [weak self] in
-                    guard let self = self, self.currentGeneration == gen else { return }
+                    guard let self = self, self.currentGeneration == gen,
+                          self.inputEpoch == epoch else { return }
                     switch name {
                     case "mkvqp-next": self.onNavigate?(1)
                     case "mkvqp-prev": self.onNavigate?(-1)

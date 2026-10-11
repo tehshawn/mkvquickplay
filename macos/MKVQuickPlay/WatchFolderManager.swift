@@ -85,6 +85,27 @@ final class WatchFolderManager {
     /// (volume unmounted / folder missing).
     private var watches: [String: ActiveWatch] = [:]
     private var pendingReview: [URL] = []
+    /// Stamp each pending file was offered at — an offered file that changes
+    /// again (re-copied over) is pulled from the batch to re-settle.
+    private var pendingStamps: [String: FileStamp] = [:]
+
+    private func addPending(_ url: URL, stamp: FileStamp) {
+        pendingStamps[url.path] = stamp
+        if !pendingReview.contains(where: { $0.path == url.path }) {
+            pendingReview.append(url)
+        }
+    }
+
+    @discardableResult
+    private func removePending(where predicate: (URL) -> Bool) -> Bool {
+        let before = pendingReview.count
+        pendingReview.removeAll { url in
+            guard predicate(url) else { return false }
+            pendingStamps.removeValue(forKey: url.path)
+            return true
+        }
+        return pendingReview.count != before
+    }
 
     private var settleTimer: Timer?
     private var batchTimer: Timer?
@@ -146,31 +167,69 @@ final class WatchFolderManager {
     }
 
     func removeFolder(path: String, persist: Bool = true) {
-        if let watch = watches.removeValue(forKey: path) {
-            stopStream(of: watch)
-            let prefix = path.hasSuffix("/") ? path : path + "/"
-            pendingReview.removeAll { $0.path.hasPrefix(prefix) }
-            onPendingChanged?(pendingReview.count)
-        }
         configs.removeAll { $0.displayPath == path || resolve($0)?.path == path }
+        // Tear down every watch no longer backed by a config — a live watch
+        // can be keyed under a stale (pre-rename) path that the menu's
+        // resolved `path` doesn't match, which would leak its FSEventStream.
+        let backed = Set(configs.compactMap { resolve($0)?.path })
+        for (key, watch) in watches where key == path || !backed.contains(key) {
+            stopStream(of: watch)
+            watches.removeValue(forKey: key)
+            seenSets.removeValue(forKey: key)
+            let prefix = key.hasSuffix("/") ? key : key + "/"
+            removePending(where: { $0.path.hasPrefix(prefix) })
+        }
+        // A dormant folder (volume ejected) has no live watch — still drop
+        // its pendings by the display path.
+        let prefix = path.hasSuffix("/") ? path : path + "/"
+        removePending(where: { $0.path.hasPrefix(prefix) })
+        onPendingChanged?(pendingReview.count)
         if persist { saveConfigs() }
         saveSeenSets()
         refreshRemoteTimer()
     }
 
-    /// Hand over everything pending and clear it (the caller starts the session).
+    /// Hand over everything pending and clear it (the caller starts the
+    /// session). Only NOW are the files marked seen — settled-but-unreviewed
+    /// arrivals therefore survive a relaunch: the arm-time reconcile finds
+    /// them absent from the seen-set and re-offers them.
     func takePendingReview() -> [URL] {
         let batch = pendingReview
         pendingReview = []
+        pendingStamps.removeAll()
+        for url in batch {
+            guard let (_, watch) = watchCovering(url.path), let stamp = stamp(of: url) else { continue }
+            watch.seen[url.path] = stamp
+        }
+        saveSeenSets()
         onPendingChanged?(0)
         return batch
+    }
+
+    /// Put a taken batch back (the review session failed to start) so the
+    /// arrivals aren't silently burned.
+    func restorePending(_ urls: [URL]) {
+        for url in urls {
+            if let (_, watch) = watchCovering(url.path) {
+                watch.seen.removeValue(forKey: url.path)
+            }
+            if let stamp = stamp(of: url) { addPending(url, stamp: stamp) }
+        }
+        saveSeenSets()
+        onPendingChanged?(pendingReview.count)
     }
 
     // MARK: - Arming
 
     private func resolve(_ config: FolderConfig) -> URL? {
         var stale = false
+        // .withoutMounting/.withoutUI: this runs on the main thread from
+        // menuWillOpen — resolving a bookmark on an unreachable network
+        // share must not block on an SMB mount attempt or present UI. An
+        // unmounted volume simply reads as dormant.
         guard let url = try? URL(resolvingBookmarkData: config.bookmark,
+                                 options: [.withoutUI, .withoutMounting],
+                                 relativeTo: nil,
                                  bookmarkDataIsStale: &stale) else { return nil }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
@@ -188,12 +247,19 @@ final class WatchFolderManager {
         let path = url.path
         guard watches[path] == nil else { return }
 
-        // Keep the stored bookmark/display path current across renames.
-        if config.displayPath != path,
-           let index = configs.firstIndex(where: { $0.bookmark == config.bookmark }) {
-            configs[index].displayPath = path
-            if let fresh = try? url.bookmarkData() { configs[index].bookmark = fresh }
-            saveConfigs()
+        // Keep the stored bookmark/display path current across renames, and
+        // carry the seen-set to its new key — losing it would re-offer the
+        // folder's entire existing contents as "new" into a Delete-key
+        // review workflow.
+        if config.displayPath != path {
+            if let migrated = seenSets.removeValue(forKey: config.displayPath), seenSets[path] == nil {
+                seenSets[path] = migrated
+            }
+            if let index = configs.firstIndex(where: { $0.bookmark == config.bookmark }) {
+                configs[index].displayPath = path
+                if let fresh = try? url.bookmarkData() { configs[index].bookmark = fresh }
+                saveConfigs()
+            }
         }
 
         let watch = ActiveWatch(folderURL: url)
@@ -220,6 +286,11 @@ final class WatchFolderManager {
             if !FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) || !isDirectory.boolValue {
                 stopStream(of: watch)
                 watches.removeValue(forKey: path)
+                // Park (not burn) its pendings: they were never marked seen,
+                // so a remount re-candidates and re-offers them.
+                if removePending(where: { $0.path.hasPrefix(path.hasSuffix("/") ? path : path + "/") }) {
+                    onPendingChanged?(pendingReview.count)
+                }
             }
         }
         for config in configs where resolve(config).map({ watches[$0.path] == nil }) ?? false {
@@ -304,12 +375,19 @@ final class WatchFolderManager {
     }
 
     private func watchCovering(_ path: String) -> (String, ActiveWatch)? {
+        // Longest matching prefix wins: with nested watch folders (/A and
+        // /A/B), an event under /A/B must route to /A/B — first match over a
+        // hash-ordered dictionary left the inner folder event-dead on
+        // arbitrary launches.
+        var best: (String, ActiveWatch)?
         for (watchPath, watch) in watches {
             if path == watchPath || path.hasPrefix(watchPath.hasSuffix("/") ? watchPath : watchPath + "/") {
-                return (watchPath, watch)
+                if best == nil || watchPath.count > best!.0.count {
+                    best = (watchPath, watch)
+                }
             }
         }
-        return nil
+        return best
     }
 
     // MARK: - Candidates & settle gate
@@ -347,13 +425,22 @@ final class WatchFolderManager {
             // Deleted or replaced by a non-file: forget it everywhere.
             watch.candidates.removeValue(forKey: path)
             if watch.seen.removeValue(forKey: path) != nil { saveSeenSets() }
-            if pendingReview.contains(where: { $0.path == path }) {
-                pendingReview.removeAll { $0.path == path }
+            if removePending(where: { $0.path == path }) {
                 onPendingChanged?(pendingReview.count)
             }
+            // A candidate that vanished instead of settling must not strand
+            // already-settled pendings waiting for an offer.
+            if !pendingReview.isEmpty { scheduleBatchOffer() }
             return
         }
-        if watch.seen[path] == current { return } // already offered, unchanged
+        if watch.seen[path] == current { return } // reviewed earlier, unchanged
+        if pendingStamps[path] == current { return } // already offered, unchanged
+        // An offered file that changed again (re-copied over) leaves the
+        // batch and re-settles — clicking Review mid-copy would hand mpv a
+        // half-written file, the exact thing the settle gate prevents.
+        if removePending(where: { $0.path == path }) {
+            onPendingChanged?(pendingReview.count)
+        }
         if var candidate = watch.candidates[path] {
             candidate.lastEventAt = Date()
             if candidate.lastStamp != current {
@@ -368,6 +455,16 @@ final class WatchFolderManager {
     }
 
     private func reconcile(_ watch: ActiveWatch) {
+        // A watch whose folder vanished (renamed, ejected) must not
+        // "reconcile against nothing" — that would prune its whole seen-set
+        // and pending list. Hand it to volumesChanged, which parks or
+        // re-resolves it (and removes it from `watches`, so no recursion).
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: watch.folderURL.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            volumesChanged()
+            return
+        }
         let now = currentStamps(in: watch.folderURL)
         for (path, _) in now where watch.seen[path] != now[path] {
             touch(URL(fileURLWithPath: path), in: watch)
@@ -378,11 +475,11 @@ final class WatchFolderManager {
             for path in gone { watch.seen.removeValue(forKey: path) }
             saveSeenSets()
         }
-        let before = pendingReview.count
-        pendingReview.removeAll { url in
+        if removePending(where: { url in
             url.deletingLastPathComponent().path == watch.folderURL.path && now[url.path] == nil
+        }) {
+            onPendingChanged?(pendingReview.count)
         }
-        if pendingReview.count != before { onPendingChanged?(pendingReview.count) }
     }
 
     private func startSettleTimerIfNeeded() {
@@ -395,11 +492,13 @@ final class WatchFolderManager {
     private func pollCandidates() {
         var anyLeft = false
         var settledAny = false
+        var removedAny = false
         for watch in watches.values {
             for (path, var candidate) in watch.candidates {
                 let url = URL(fileURLWithPath: path)
                 guard let current = stamp(of: url) else {
                     watch.candidates.removeValue(forKey: path)
+                    removedAny = true
                     continue
                 }
                 if current == candidate.lastStamp {
@@ -410,14 +509,21 @@ final class WatchFolderManager {
                     candidate.lastEventAt = Date()
                 }
                 let quiet = Date().timeIntervalSince(candidate.lastEventAt) >= Timing.eventQuiet
-                if candidate.stablePolls >= Timing.stablePolls && quiet && current.size > 0 {
-                    // Settled: offer it.
+                if candidate.stablePolls >= Timing.stablePolls && quiet {
                     watch.candidates.removeValue(forKey: path)
-                    watch.seen[path] = current
-                    if !pendingReview.contains(where: { $0.path == path }) {
-                        pendingReview.append(url)
+                    if current.size > 0 {
+                        // Settled: offer it. NOT marked seen yet — seen is
+                        // written when the batch is taken for review, so a
+                        // quit/crash before reviewing re-offers on relaunch
+                        // instead of silently burning the arrivals.
+                        addPending(url, stamp: current)
+                        settledAny = true
                     }
-                    settledAny = true
+                    if current.size == 0 { removedAny = true }
+                    // A stable zero-byte stub is dropped — a real copy will
+                    // write bytes and re-touch it. Kept as a candidate, it
+                    // would spin the settle timer forever and block every
+                    // batch offer behind the allSatisfy gate.
                 } else {
                     watch.candidates[path] = candidate
                     anyLeft = true
@@ -425,8 +531,13 @@ final class WatchFolderManager {
             }
         }
         if settledAny {
-            saveSeenSets()
             onPendingChanged?(pendingReview.count)
+        }
+        // Reschedule the offer on progress, and also when the last unsettled
+        // candidate left WITHOUT settling (deleted, zero-byte stub) — the
+        // already-settled pendings must not sit stranded waiting on a settle
+        // that will never come.
+        if settledAny || (removedAny && !pendingReview.isEmpty) {
             scheduleBatchOffer()
         }
         if !anyLeft {

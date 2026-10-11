@@ -297,7 +297,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Service Handling
 
-    private func handleServiceInvocation(with urls: [URL], allowToggle: Bool = true) {
+    private func handleServiceInvocation(with urls: [URL], allowToggle: Bool = true,
+                                         forceNewSession: Bool = false) {
         // Selected videos, in pasteboard order.
         let selected = urls.filter { finderSelectionManager.isVideoFile($0) }
         guard let invoked = selected.first else { return }
@@ -307,7 +308,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Re-triggering the shortcut on the same selection — or on just the
         // file currently playing — toggles the preview closed. A different
         // selection (even one containing the current file) starts a new session.
-        if MPVLauncher.shared.isPlaying, let current = currentPreviewURL {
+        if !forceNewSession, MPVLauncher.shared.isPlaying, let current = currentPreviewURL {
             let currentKey = finderSelectionManager.normalizedPath(current)
             if selectionKeys == currentSelectionKeys
                 || (selected.count == 1 && selectionKeys.contains(currentKey)) {
@@ -348,6 +349,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             startURL = invoked
         }
 
+        // Invalidate player keypresses read before this switch — see
+        // MPVLauncher.inputEpoch (the IPC generation can't see same-window
+        // loadfile-replace switches).
+        MPVLauncher.shared.bumpInputEpoch()
         sessionID += 1
         let session = sessionID
         navigationPlaylist = provisional
@@ -481,6 +486,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Invalidate any in-flight Finder-sort refinement so a late result
         // can't repopulate the playlist after the preview closed.
         sessionID += 1
+        MPVLauncher.shared.bumpInputEpoch()
         statusBarController.setActive(false)
         statusBarController.setCurrentFile(nil)
     }
@@ -747,26 +753,38 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Start a review session over everything the watch folders collected.
     private func reviewPendingNewVideos() {
-        startBatchReview(watchFolderManager.takePendingReview())
+        UNUserNotificationCenter.current()
+            .removeDeliveredNotifications(withIdentifiers: [Self.newVideosCategoryID])
+        let batch = watchFolderManager.takePendingReview()
+        guard !batch.isEmpty else { return }
+        if !startBatchReview(batch) {
+            // mpv failed to start, or every file vanished — don't burn the
+            // batch; put it back so the badge and a later click still work.
+            watchFolderManager.restorePending(batch)
+        }
     }
 
     /// A session over an explicit list of files (watch-folder arrivals).
     /// The batch is the authority on membership, so the Finder-sort
-    /// refinement deliberately does not run.
-    private func startBatchReview(_ urls: [URL]) {
+    /// refinement deliberately does not run. Returns whether playback started.
+    @discardableResult
+    private func startBatchReview(_ urls: [URL]) -> Bool {
         let videos = urls
             .filter { finderSelectionManager.isVideoFile($0) && FileManager.default.fileExists(atPath: $0.path) }
             .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
-        guard let first = videos.first else { return }
+        guard let first = videos.first else { return false }
         finderSelectionManager.resetPathCache()
+        MPVLauncher.shared.bumpInputEpoch()
         sessionID += 1
         playlistEpoch += 1
         navigationPlaylist = videos
         currentSelectionKeys = nil
         playVideo(url: first, revealInFinder: true)
-        if currentPreviewURL != nil, videos.count > 1 {
+        guard currentPreviewURL != nil else { return false }
+        if videos.count > 1 {
             showPositionOSD(for: first, in: videos)
         }
+        return true
     }
 
     // MARK: - Application Lifecycle
@@ -922,10 +940,19 @@ extension AppDelegate {
     }
 
     func intentNavigate(forward: Bool) throws -> IntentNavigation {
-        guard hasActiveSession else { throw MKVQPIntentError.noActiveSession }
-        let moved = forward ? navigateToNextVideo() : navigateToPreviousVideo()
-        if moved, let now = currentPreviewURL { return .moved(now.lastPathComponent) }
-        return forward ? .atEnd : .atStart
+        guard hasActiveSession, let current = currentPreviewURL else {
+            throw MKVQPIntentError.noActiveSession
+        }
+        // Distinguish "at the boundary" from "player not commandable" —
+        // reporting at-end for a dead control channel would be a lie.
+        let playlist = currentPlaylist(for: current)
+        let target = forward ? finderSelectionManager.nextFile(after: current, in: playlist)
+                             : finderSelectionManager.previousFile(before: current, in: playlist)
+        guard let target = target else { return forward ? .atEnd : .atStart }
+        guard navigate(to: target, in: playlist), let now = currentPreviewURL else {
+            throw MKVQPIntentError.noActiveSession
+        }
+        return .moved(now.lastPathComponent)
     }
 
     /// Trash the playing file (bypasses the Delete-key safety on purpose —
@@ -963,7 +990,11 @@ extension AppDelegate {
               isDirectory.boolValue else { throw MKVQPIntentError.notAFolder }
         let videos = finderSelectionManager.videoFiles(inDirectory: folder)
         guard let first = videos.first else { throw MKVQPIntentError.noVideosInFolder }
-        handleServiceInvocation(with: [first], allowToggle: false)
+        // forceNewSession: if the folder's first video happens to be the one
+        // already playing, the same-selection branch would just surface the
+        // window, keep the OLD playlist, and this intent would claim a
+        // review it never started.
+        handleServiceInvocation(with: [first], allowToggle: false, forceNewSession: true)
         guard currentPreviewURL != nil else { throw MKVQPIntentError.launchFailed }
         return videos.count
     }

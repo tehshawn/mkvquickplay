@@ -5,17 +5,18 @@ All notable changes to MKV QuickPlay are documented here.
 ## [2.6.0]
 
 ### Added
-- **Shortcuts, Siri & Spotlight support.** Seven actions — *Preview Videos*,
-  *Next/Previous Video*, *Move Current Video to Trash*, *Toggle Purple Tag*,
-  *Stop Preview* and *Review Folder* — now appear in the Shortcuts app, can be
-  invoked by Siri ("Next video in MKV QuickPlay"), and show up in Spotlight on
-  macOS 26+. The *Preview Videos* action accepts files from other shortcuts or
-  uses the current Finder selection when run bare.
-- **Finder Quick Action.** Build a one-action shortcut around *Preview Videos*
-  and enable it as a Quick Action to get MKV QuickPlay in Finder's right-click
-  Quick Actions menu — recipe in the README.
+- **Shortcuts, Siri & Spotlight support.** Seven actions — **Preview Videos**,
+  **Next/Previous Video**, **Move Current Video to Trash**, **Toggle Purple
+  Tag**, **Stop Preview** and **Review Folder** — now appear in the Shortcuts
+  app and in Spotlight on macOS 26+, and all but Review Folder can be invoked
+  by Siri ("Next video in MKV QuickPlay"). The **Preview Videos** action
+  accepts files from other shortcuts or uses the current Finder selection when
+  run bare.
+- **Finder Quick Action.** Build a one-action shortcut around **Preview
+  Videos** and enable it as a Quick Action to get MKV QuickPlay in Finder's
+  right-click Quick Actions menu — recipe in the README.
 - **Watch folders.** Point the app at your ingest folders (menu bar →
-  *Watch Folders* → *Add Folder…*) and newly arrived videos are offered for
+  **Watch Folders** → **Add Folder…**) and newly arrived videos are offered for
   review: a notification plus a count on the menu bar icon, one click to step
   through just the new files. Files still being copied are never offered —
   arrivals must settle first — and videos already in a folder when you add it
