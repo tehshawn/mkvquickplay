@@ -3,21 +3,39 @@
   <channel>
     <title>MKV QuickPlay</title>
     <item>
-      <title>MKV QuickPlay 2.5.0</title>
-      <pubDate>Tue, 28 Jul 2026 18:14:27 +0000</pubDate>
-      <sparkle:version>12</sparkle:version>
-      <sparkle:shortVersionString>2.5.0</sparkle:shortVersionString>
+      <title>MKV QuickPlay 2.5.1</title>
+      <pubDate>Sun, 11 Oct 2026 16:34:31 +0000</pubDate>
+      <sparkle:version>13</sparkle:version>
+      <sparkle:shortVersionString>2.5.1</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
       <description><![CDATA[
-        <h2>MKV QuickPlay 2.5.0</h2>
-        <h3>Changed</h3>
+        <h2>MKV QuickPlay 2.5.1</h2>
+        <h3>Fixed</h3>
 <ul>
-<li><b>Liquid Glass app icon</b> for macOS 26 Tahoe and macOS 27 Golden Gate: the stack icon is now a native layered icon with dynamic lighting and dark, clear, and tinted appearance variants — no more legacy gray-squircle boxing on modern systems. Older macOS versions keep the classic icon automatically. (The layered source lives at <code>macos/MKVQuickPlay/AppIcon.icon</code> and can be edited in Apple's Icon Composer.)</li>
-<li><b>More reliable player focus on macOS 26/27</b>: handing focus to the video window now uses the modern cooperative-activation hand-off, preventing the preview from occasionally opening behind other windows under the new focus-stealing protections.</li>
+<li><b>Navigation keys went dead after the app had been running for a few days</b> — the arrows, <code>Delete</code>, <code>P</code>, <code>Esc</code>, <code>Q</code> and <code>Space</code> all stopped working in the player until MKV QuickPlay was quit and reopened. The custom key bindings mpv needs were written once, at app launch, into the system's temporary folder, which macOS quietly sweeps of files older than three days. After that, every player window started with no key bindings at all (and mpv's complaint went to <code>/dev/null</code>). The bindings now live in <code>~/Library/Application Support/MKVQuickPlay/</code>, are rewritten before every player launch, and are additionally installed over the control channel once it connects — so a session can never be left keyless again. mpv's warnings and errors are now forwarded to the system log (Console.app, search for <code>[mpv]</code>) so a recurrence of this class of problem leaves evidence.</li>
+<li><b>Finder's selection now follows the playing video without stealing focus from the player.</b> Previously Finder was activated to move the highlight and macOS was then asked to hand focus back to mpv — a request a background app can't guarantee under the macOS 14+ cooperative-activation rules, and one macOS 26/27 declines more often, after which every arrow key went to Finder instead of the player. Finder is now told to reveal the file over the existing Automation channel with no activation; the old activate-and-refocus dance remains only as a fallback when Finder can't be scripted.</li>
+<li>The player window is checked for keyboard focus once its control channel opens, and activation is requested on its behalf if macOS declined mpv's own request; a refusal is now logged instead of failing silently.</li>
+<li><b>Set Keyboard Shortcut… works again on macOS 26/27</b>: the shortcut recorder (from the KeyboardShortcuts library) didn't capture key presses and its ✕ button did nothing on Tahoe and Golden Gate; updated to KeyboardShortcuts 3.1.0, which fixes this.</li>
+<li>A large Finder selection (hundreds of files) could deadlock the hotkey for 30 seconds: the selection query's output is now drained while the script runs instead of after it exits, and a script that ignores termination is force-killed so it can never wedge the hotkey for the rest of the session.</li>
+<li>Declining the Automation permission used to disable Finder-order navigation until relaunch even after re-enabling it in System Settings; it now recovers on the next successful query.</li>
+<li>A multi-file selection spanning several folders (search results, a tag view) no longer shrinks to the files in the first file's folder once Finder's sort order is applied.</li>
+<li>Undo Move to Trash no longer wedges on a file whose original folder is gone (renamed, deleted, ejected volume) — the entry is dropped with an explanation so older undos stay reachable.</li>
+<li>A second instance of the app no longer deletes a running instance's live control socket on startup.</li>
+<li>Re-invoking the preview while the player was still starting up used to kill and relaunch it; commands are now queued and delivered once the control channel opens (this also makes the "Restored" message after an undo appear when the player had to be relaunched).</li>
+<li>Alerts from the menu ("How to Use…", "About") now request activation before appearing so they can't open behind other windows.</li>
+<li>Updated Sparkle to 2.10.0 (security hardening in 2.9.5/2.9.6 and macOS 27 fixes).</li>
 </ul>
-        <p><a href="https://github.com/tehshawn/mkvquickplay/releases/tag/v2.5.0">Full release on GitHub</a></p>
+<h3>Changed</h3>
+<ul>
+<li>Videos previewed from the Desktop, or from a search, Recents or Tags window, now navigate (Up/Down) in alphabetical order. Previously the player borrowed the sort of whichever Finder window happened to be in front — one unrelated to the video's folder — so the order could be unexpected. Open the video's folder in a Finder window to navigate in that window's sort order.</li>
+<li>The menu, tooltip, help and About text show the shortcut you actually have set rather than the factory default.</li>
+<li>The app keeps itself out of App Nap only while a player window is open, so its timers aren't coalesced mid-session.</li>
+<li>Help text now lists <code>Cmd+Z</code> and points to "Set Keyboard Shortcut…" in the menu instead of the Services pane of System Settings.</li>
+<li>Building from source now requires Xcode 26 or later (KeyboardShortcuts 3.x is a Swift 6.2 package).</li>
+</ul>
+        <p><a href="https://github.com/tehshawn/mkvquickplay/releases/tag/v2.5.1">Full release on GitHub</a></p>
       ]]></description>
-      <enclosure url="https://github.com/tehshawn/mkvquickplay/releases/download/v2.5.0/MKVQuickPlay-macOS-v2.5.0.zip" sparkle:edSignature="3KCSibzM7onk2L3PFj0GZqFBezThPSiBgkOHMF8uQE4ISxqmZEhVRgd43+sxb03aOarr0M8Pmd8LHZ4O5WUaDw==" length="2707430" type="application/octet-stream"/>
+      <enclosure url="https://github.com/tehshawn/mkvquickplay/releases/download/v2.5.1/MKVQuickPlay-macOS-v2.5.1.zip" sparkle:edSignature="X+YWixtaBRnQwKR5ysEAMnbrwQGZw4tsujt8melfWs++h99jfvcp66i3CFLCsLaEXPGNQXaYfFAcUL8ucld/DA==" length="2915576" type="application/octet-stream"/>
     </item>
   </channel>
 </rss>
