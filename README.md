@@ -36,6 +36,8 @@ It pairs well with [QLVideo](https://github.com/Marginal/QLVideo) — use that f
 - **Minimal UI**: Runs quietly in the menu bar with no Dock icon; optional *Launch at Login*
 - **Native Performance**: Uses mpv for fast, high-quality video playback
 - **Open With Support**: Right-click any video file > Open With > MKV QuickPlay
+- **Shortcuts, Siri & Spotlight**: Seven automation actions (preview, navigate, trash, tag, review a folder) for the Shortcuts app, Siri phrases, and Spotlight on macOS 26+
+- **Watch Folders**: Point the app at your ingest folders and new arrivals are offered for review — a notification plus a count in the menu bar, one click to step through just the new files
 
 ## Requirements
 
@@ -121,6 +123,47 @@ open /Applications/MKVQuickPlay.app
 Click the menu bar icon → **Set Keyboard Shortcut…** and press any combination.
 
 (The Finder Services entry also remains available under Finder > Services > Preview with MKVQuickPlay; its shortcut can be changed in System Settings > Keyboard > Keyboard Shortcuts > Services.)
+
+## Automation (Shortcuts, Siri & Quick Actions)
+
+MKV QuickPlay ships seven Shortcuts actions: **Preview Videos**, **Next
+Video**, **Previous Video**, **Move Current Video to Trash**, **Toggle Purple
+Tag**, **Stop Preview**, and **Review Folder**. They also respond to Siri
+("Next video in MKV QuickPlay") and appear in Spotlight on macOS 26 and later.
+
+Notes:
+
+- **Preview Videos** accepts files piped in from other actions; run it with no
+  input and it previews the current Finder selection instead (this uses the
+  same Finder Automation permission as the keyboard shortcut).
+- **Move Current Video to Trash** works even when the Delete-key safety is
+  off — invoking an action named "move to trash" is not an accidental keypress.
+
+### Finder Quick Action (right-click menu)
+
+To put a preview entry in Finder's right-click **Quick Actions** menu:
+
+1. Open **Shortcuts** and create a new shortcut.
+2. Add the **Preview Videos** action (from MKV QuickPlay).
+3. In the shortcut's details (⌥⌘2): enable **Use as Quick Action** → **Finder**,
+   and set *Receive* to **Files** as input, feeding the action's *Videos* field.
+4. Right-click any video in Finder → Quick Actions → your shortcut.
+
+(The zero-permission Finder > Services > Preview with MKVQuickPlay entry is
+always available without any setup.)
+
+## Watch Folders
+
+Menu bar icon → **Watch Folders** → **Add Folder…** and pick your ingest or
+download folders. When new videos land there, a notification appears (and the
+menu bar icon shows a count); click it — or use **Review N New Videos…** in
+the menu — to step through just the new arrivals with the usual keys
+(arrows, `P` to tag, `Delete` to trash when enabled).
+
+- Files still being copied are never offered; arrivals must finish and settle first.
+- Videos already in a folder when you add it don't count as new.
+- Unplugging and replugging a drive (or sleeping the Mac) is handled — watching
+  resumes and anything that arrived meanwhile is picked up.
 
 ## Supported Formats
 

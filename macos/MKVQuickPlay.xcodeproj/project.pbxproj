@@ -9,6 +9,8 @@
 /* Begin PBXBuildFile section */
 		A1000001211111110000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000002211111110000001 /* AppDelegate.swift */; };
 		A1000003211111110000001 /* StatusBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000004211111110000001 /* StatusBarController.swift */; };
+		A1000030211111110000001 /* MKVQuickPlayIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000032211111110000001 /* MKVQuickPlayIntents.swift */; };
+		A1000031211111110000001 /* WatchFolderManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000033211111110000001 /* WatchFolderManager.swift */; };
 		A1000007211111110000001 /* MPVLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000008211111110000001 /* MPVLauncher.swift */; };
 		A1000009211111110000001 /* FinderSelectionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000A211111110000001 /* FinderSelectionManager.swift */; };
 		A100000B211111110000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A100000C211111110000001 /* Assets.xcassets */; };
@@ -20,6 +22,8 @@
 /* Begin PBXFileReference section */
 		A1000002211111110000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		A1000004211111110000001 /* StatusBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarController.swift; sourceTree = "<group>"; };
+		A1000032211111110000001 /* MKVQuickPlayIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MKVQuickPlayIntents.swift; sourceTree = "<group>"; };
+		A1000033211111110000001 /* WatchFolderManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchFolderManager.swift; sourceTree = "<group>"; };
 		A1000008211111110000001 /* MPVLauncher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPVLauncher.swift; sourceTree = "<group>"; };
 		A100000A211111110000001 /* FinderSelectionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FinderSelectionManager.swift; sourceTree = "<group>"; };
 		A100000C211111110000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -55,6 +59,8 @@
 			children = (
 				A1000002211111110000001 /* AppDelegate.swift */,
 				A1000004211111110000001 /* StatusBarController.swift */,
+				A1000032211111110000001 /* MKVQuickPlayIntents.swift */,
+				A1000033211111110000001 /* WatchFolderManager.swift */,
 				A1000008211111110000001 /* MPVLauncher.swift */,
 				A100000A211111110000001 /* FinderSelectionManager.swift */,
 				A1000027211111110000001 /* AppIcon.icon */,
@@ -153,6 +159,8 @@
 			files = (
 				A1000001211111110000001 /* AppDelegate.swift in Sources */,
 				A1000003211111110000001 /* StatusBarController.swift in Sources */,
+				A1000030211111110000001 /* MKVQuickPlayIntents.swift in Sources */,
+				A1000031211111110000001 /* WatchFolderManager.swift in Sources */,
 				A1000007211111110000001 /* MPVLauncher.swift in Sources */,
 				A1000009211111110000001 /* FinderSelectionManager.swift in Sources */,
 			);

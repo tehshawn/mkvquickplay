@@ -14,11 +14,18 @@ class StatusBarController: NSObject, NSMenuDelegate {
     private var undoItem: NSMenuItem?
     private var updateAvailableItem: NSMenuItem?
     private var hotkeyItem: NSMenuItem?
+    private var reviewNewItem: NSMenuItem?
+    private var watchFoldersMenu: NSMenu?
 
     var onHelpRequested: (() -> Void)?
     var onRevealRequested: (() -> Void)?
     var onUndoRequested: (() -> Void)?
     var onCheckForUpdates: (() -> Void)?
+    var onReviewNewVideos: (() -> Void)?
+    var onAddWatchFolder: (() -> Void)?
+    var onRemoveWatchFolder: ((String) -> Void)?
+    /// Supplies the watch-folder rows for the submenu rebuild in menuWillOpen.
+    var watchFolderListProvider: (() -> [(name: String, path: String, active: Bool)])?
 
     private let trashEnabledKey = "mkvqp.trashEnabled"
 
@@ -39,6 +46,7 @@ class StatusBarController: NSObject, NSMenuDelegate {
         loginItem?.state = (SMAppService.mainApp.status == .enabled) ? .on : .off
         trashItem?.state = isTrashEnabled ? .on : .off
         refreshHotkeyText()
+        rebuildWatchFoldersMenu()
     }
 
     /// Show the shortcut the user actually has, not the factory default:
@@ -104,6 +112,13 @@ class StatusBarController: NSObject, NSMenuDelegate {
         menu.autoenablesItems = false
         menu.delegate = self
 
+        // Hidden until watched folders collect new arrivals.
+        let reviewNew = NSMenuItem(title: "Review New Videos…", action: #selector(reviewNewAction), keyEquivalent: "")
+        reviewNew.target = self
+        reviewNew.isHidden = true
+        menu.addItem(reviewNew)
+        reviewNewItem = reviewNew
+
         // Hidden until Sparkle finds a scheduled update (gentle reminder for
         // a Dock-less app whose update alerts would otherwise appear unseen).
         let updateAvail = NSMenuItem(title: "Update Available…", action: #selector(checkForUpdatesAction), keyEquivalent: "")
@@ -156,6 +171,13 @@ class StatusBarController: NSObject, NSMenuDelegate {
         login.state = (SMAppService.mainApp.status == .enabled) ? .on : .off
         menu.addItem(login)
         loginItem = login
+
+        let watch = NSMenuItem(title: "Watch Folders", action: nil, keyEquivalent: "")
+        let watchMenu = NSMenu()
+        watchMenu.autoenablesItems = false
+        watch.submenu = watchMenu
+        menu.addItem(watch)
+        watchFoldersMenu = watchMenu
 
         let shortcutItem = NSMenuItem(title: "Set Keyboard Shortcut…", action: #selector(setShortcutAction), keyEquivalent: "")
         shortcutItem.target = self
@@ -233,6 +255,61 @@ class StatusBarController: NSObject, NSMenuDelegate {
         } else {
             undoItem?.title = "Undo Move to Trash"
             undoItem?.isEnabled = false
+        }
+    }
+
+    @objc private func reviewNewAction() {
+        onReviewNewVideos?()
+    }
+
+    @objc private func addWatchFolderAction() {
+        onAddWatchFolder?()
+    }
+
+    @objc private func removeWatchFolderAction(_ sender: NSMenuItem) {
+        if let path = sender.representedObject as? String {
+            onRemoveWatchFolder?(path)
+        }
+    }
+
+    /// The submenu is data-driven and cheap, so it is rebuilt on every open.
+    private func rebuildWatchFoldersMenu() {
+        guard let menu = watchFoldersMenu else { return }
+        menu.removeAllItems()
+        let add = NSMenuItem(title: "Add Folder…", action: #selector(addWatchFolderAction), keyEquivalent: "")
+        add.target = self
+        menu.addItem(add)
+        let folders = watchFolderListProvider?() ?? []
+        guard !folders.isEmpty else { return }
+        menu.addItem(NSMenuItem.separator())
+        for folder in folders {
+            let item = NSMenuItem(title: folder.active ? folder.name : "\(folder.name) (unavailable)",
+                                  action: nil, keyEquivalent: "")
+            item.toolTip = folder.path
+            let sub = NSMenu()
+            sub.autoenablesItems = false
+            let remove = NSMenuItem(title: "Stop Watching", action: #selector(removeWatchFolderAction(_:)), keyEquivalent: "")
+            remove.target = self
+            remove.representedObject = folder.path
+            sub.addItem(remove)
+            item.submenu = sub
+            menu.addItem(item)
+        }
+    }
+
+    /// Badge the status icon and surface the "Review N New Videos…" item.
+    func setPendingReviewCount(_ count: Int) {
+        reviewNewItem?.isHidden = (count == 0)
+        reviewNewItem?.title = count == 1 ? "Review 1 New Video…" : "Review \(count) New Videos…"
+        guard let item = statusItem, let button = item.button else { return }
+        if count > 0 {
+            item.length = NSStatusItem.variableLength
+            button.imagePosition = .imageLeft
+            button.title = "\(count)"
+        } else {
+            button.title = ""
+            button.imagePosition = .imageOnly
+            item.length = NSStatusItem.squareLength
         }
     }
 

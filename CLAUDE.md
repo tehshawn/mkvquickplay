@@ -149,6 +149,50 @@ throughout for that reason. Build requires **Xcode 26+**.
   coordinate space — y grows downward). `isTemplate = true` is what makes the
   blue "playing" tint and light/dark adaptation work; there is no asset to find.
 
+### App Intents (`MKVQuickPlayIntents.swift`)
+- Seven intents (Preview Videos, Next/Previous Video, Move Current Video to
+  Trash, Toggle Purple Tag, Stop Preview, Review Folder) plus App Shortcuts
+  with Siri phrases. Everything targets the **macOS 13.0 App Intents floor**:
+  no `supportedModes`/`openAppWhenRun` (the background default is right for
+  driving an external mpv window), and **no `@Parameter` option beyond
+  `title:`** — every overload carrying `description:` or
+  `supportedContentTypes:` is macOS 15+, which is why the file parameters are
+  untyped and filtered in code (`isVideoFile`, directory check).
+- Intents run **in-process**; macOS background-launches the app when needed.
+  Every `perform()` is `@MainActor` and calls the **intent facade** extension
+  at the bottom of AppDelegate.swift. The facade lives in that file so it can
+  reach the private internals — new intent code goes through it, never around
+  it. Intents always pass `allowToggle: false` ("preview" from an automation
+  must never toggle-close).
+- The Delete-key safety gate (`mkvqp.trashEnabled`) lives in the **onTrash
+  key-callback wiring**, not in `trashCurrentAndAdvance()` — the Trash intent
+  bypasses it on purpose.
+- After changing any intent metadata, replace the copy in /Applications and
+  launch it once before expecting Shortcuts/Spotlight to update; stray
+  DerivedData copies registered with LaunchServices cause ghost actions.
+- Finder Quick Action = a user-imported shortcut wrapping *Preview Videos*
+  (recipe in README); there is deliberately no Finder Sync/Action extension.
+
+### Watch folders (`WatchFolderManager.swift`)
+- One FSEventStream per folder (file events, 2 s latency, `sinceNow`) + a
+  reconcile scan on arm/mount/wake/anomalous flags and on a 30 s timer for
+  non-local volumes. **No DispatchSource** — an open fd per folder would
+  block ejecting the external SSDs these folders live on.
+- **Settle gate** before a file is offered: size+mtime stable across 2 polls
+  AND ≥3 s event-quiet AND nonzero size (Finder shows a copy the moment it
+  *starts*, and arrivals feed a Delete-key workflow). Batches are offered
+  after 5 s of folder quiet and marked seen at offer time; adding a folder
+  seeds the seen-set silently (pre-existing videos are not "new").
+- Folders persist as bookmarks (`mkvqp.watchFolders` in UserDefaults);
+  seen-sets live in Application Support `watch-seen.json`. An unresolvable
+  folder goes dormant and re-arms on the next mount/wake.
+- Review sessions start via `AppDelegate.startBatchReview` — the batch is the
+  authority on membership, so the Finder-sort refinement deliberately does
+  not run there.
+- FSEvents contexts hold an **unretained** self: the manager is owned by
+  AppDelegate for the app's lifetime and must never be deallocated or
+  recreated.
+
 ## Building (dev)
 
 Requires **Xcode 26+** (KeyboardShortcuts 3.x is a Swift 6.2 package).

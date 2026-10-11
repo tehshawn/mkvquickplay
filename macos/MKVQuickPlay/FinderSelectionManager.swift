@@ -101,8 +101,11 @@ class FinderSelectionManager {
 
     /// Get sibling video files in the same directory, sorted by name
     func getSiblingVideoFiles(for url: URL) -> [URL] {
-        let directory = url.deletingLastPathComponent()
+        return videoFiles(inDirectory: url.deletingLastPathComponent())
+    }
 
+    /// All supported videos directly inside `directory`, sorted by name.
+    func videoFiles(inDirectory directory: URL) -> [URL] {
         do {
             let contents = try FileManager.default.contentsOfDirectory(
                 at: directory,

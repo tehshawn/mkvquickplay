@@ -1,6 +1,7 @@
 import Cocoa
 import KeyboardShortcuts
 import Sparkle
+import UserNotifications
 
 extension KeyboardShortcuts.Name {
     /// Global hotkey to preview the current Finder selection. User-recordable
@@ -31,6 +32,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // UI Controllers
     private var statusBarController: StatusBarController!
     private var finderSelectionManager: FinderSelectionManager!
+
+    /// Watches user-chosen folders for newly arrived videos (menu-configured).
+    private var watchFolderManager: WatchFolderManager!
 
     /// Sparkle auto-updater (checks the appcast on GitHub Pages).
     private var updaterController: SPUStandardUpdaterController!
@@ -108,6 +112,42 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.updaterController.checkForUpdates(nil)
         }
 
+        // Watch folders: menu wiring + arrival notifications.
+        watchFolderManager = WatchFolderManager(isVideoFile: { [weak self] url in
+            self?.finderSelectionManager.isVideoFile(url) ?? false
+        })
+        statusBarController.watchFolderListProvider = { [weak self] in
+            self?.watchFolderManager.folders ?? []
+        }
+        statusBarController.onAddWatchFolder = { [weak self] in
+            self?.addWatchFolderViaPanel()
+        }
+        statusBarController.onRemoveWatchFolder = { [weak self] path in
+            self?.watchFolderManager.removeFolder(path: path)
+        }
+        statusBarController.onReviewNewVideos = { [weak self] in
+            self?.reviewPendingNewVideos()
+        }
+        watchFolderManager.onPendingChanged = { [weak self] count in
+            self?.statusBarController.setPendingReviewCount(count)
+        }
+        watchFolderManager.onBatchReady = { [weak self] count in
+            self?.statusBarController.setPendingReviewCount(count)
+            self?.postNewVideosNotification(count: count)
+        }
+        statusBarController.setPendingReviewCount(watchFolderManager.pendingCount)
+
+        // Notification plumbing for the "N new videos" banner. Authorization
+        // is requested only when the user adds their first watch folder.
+        let notificationCenter = UNUserNotificationCenter.current()
+        notificationCenter.delegate = self
+        let reviewAction = UNNotificationAction(identifier: Self.reviewActionID,
+                                                title: "Review", options: [])
+        notificationCenter.setNotificationCategories([
+            UNNotificationCategory(identifier: Self.newVideosCategoryID,
+                                   actions: [reviewAction], intentIdentifiers: []),
+        ])
+
         // Update app state when mpv exits (window closed, Esc, or Q).
         MPVLauncher.shared.onClose = { [weak self] in
             self?.clearPreviewState()
@@ -122,9 +162,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Handle the Trash key from mpv.
+        // Handle the Trash key from mpv. The Delete-key safety gate lives
+        // here, not in trashCurrentAndAdvance(): the explicit Trash *intent*
+        // bypasses it on purpose (invoking "move to the Trash" by name is
+        // not an accidental keypress).
         MPVLauncher.shared.onTrash = { [weak self] in
-            self?.trashCurrentAndAdvance()
+            guard let self = self, self.statusBarController.isTrashEnabled else { return }
+            self.trashCurrentAndAdvance()
         }
 
         // Handle the Undo (Cmd+Z) key from mpv.
@@ -352,31 +396,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Navigation
 
-    private func navigateToNextVideo() {
-        guard let currentURL = currentPreviewURL else { return }
+    /// Returns whether the preview moved (false at the end of the playlist
+    /// or with no live player) — the keyboard path ignores it; intents don't.
+    @discardableResult
+    private func navigateToNextVideo() -> Bool {
+        guard let currentURL = currentPreviewURL else { return false }
         let playlist = currentPlaylist(for: currentURL)
         guard let nextURL = finderSelectionManager.nextFile(after: currentURL, in: playlist) else {
             // Already at the last video — stay put (QuickLook-style), no wrap.
-            return
+            return false
         }
-        navigate(to: nextURL, in: playlist)
+        return navigate(to: nextURL, in: playlist)
     }
 
-    private func navigateToPreviousVideo() {
-        guard let currentURL = currentPreviewURL else { return }
+    @discardableResult
+    private func navigateToPreviousVideo() -> Bool {
+        guard let currentURL = currentPreviewURL else { return false }
         let playlist = currentPlaylist(for: currentURL)
         guard let prevURL = finderSelectionManager.previousFile(before: currentURL, in: playlist) else {
             // Already at the first video — stay put, no wrap.
-            return
+            return false
         }
-        navigate(to: prevURL, in: playlist)
+        return navigate(to: prevURL, in: playlist)
     }
 
     /// Step the existing mpv window to another file. Never relaunches mpv:
     /// if the player is gone (user closed it a beat ago), the request is
     /// dropped and the termination handler cleans up state.
-    private func navigate(to url: URL, in playlist: [URL]) {
-        guard MPVLauncher.shared.load(url: url) else { return }
+    @discardableResult
+    private func navigate(to url: URL, in playlist: [URL]) -> Bool {
+        guard MPVLauncher.shared.load(url: url) else { return false }
         currentPreviewURL = url
         // The invoking selection no longer describes what's playing, so it
         // must not match a later re-invocation as a "toggle closed".
@@ -384,6 +433,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusBarController.setCurrentFile(url)
         followInFinder(url)
         showPositionOSD(for: url, in: playlist)
+        return true
     }
 
     /// Move the Finder highlight to follow the playing video.
@@ -437,8 +487,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Trash & Reveal
 
-    private func trashCurrentAndAdvance() {
-        guard statusBarController.isTrashEnabled, let current = currentPreviewURL else { return }
+    /// Moves the playing file to the Trash and advances. The Delete-key
+    /// safety gate lives at the key-callback site; this core is ungated so
+    /// the explicit Trash intent can call it. Returns whether the file was
+    /// actually trashed.
+    @discardableResult
+    private func trashCurrentAndAdvance() -> Bool {
+        guard let current = currentPreviewURL else { return false }
 
         let playlist = currentPlaylist(for: current)
         // Pick a successor before removing the current file from disk.
@@ -452,7 +507,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             MPVLauncher.shared.showText("Couldn't move to Trash")
             NSLog("[MKVQuickPlay] Trash failed for \(current.lastPathComponent): \(error)")
-            return
+            return false
         }
 
         // Remember it for Undo (only if we know where it landed in the Trash).
@@ -482,6 +537,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // No successor, or the player is already gone — close the preview.
             closePreview()
         }
+        return true
     }
 
     /// Feedback for an explicit user action: on the mpv OSD while a player
@@ -578,27 +634,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Toggle the Purple Finder tag on the playing video — mark keepers
     /// during a culling pass without interrupting playback. Other tags on
     /// the file are preserved.
-    private func togglePurpleTag() {
-        guard let url = currentPreviewURL else { return }
+    /// Returns whether the file is now tagged, or nil when the toggle failed.
+    @discardableResult
+    private func togglePurpleTag() -> Bool? {
+        guard let url = currentPreviewURL else { return nil }
 
         do {
             let existing = (try url.resourceValues(forKeys: [.tagNamesKey]).tagNames) ?? []
             let newTags: [String]
             let confirmation: String
+            let nowTagged: Bool
             if existing.contains("Purple") {
                 newTags = existing.filter { $0 != "Purple" }
                 confirmation = "Purple tag removed"
+                nowTagged = false
             } else {
                 newTags = existing + ["Purple"]
                 confirmation = "Tagged Purple"
+                nowTagged = true
             }
             // NSURL API: the Swift URLResourceValues.tagNames *setter* is
             // annotated macOS 26+, but this equivalent has existed since 10.9.
             try (url as NSURL).setResourceValue(newTags as NSArray, forKey: .tagNamesKey)
             MPVLauncher.shared.showText(confirmation)
+            return nowTagged
         } catch {
             MPVLauncher.shared.showText("Couldn't change tag")
             NSLog("[MKVQuickPlay] Tag toggle failed for \(url.lastPathComponent): \(error)")
+            return nil
         }
     }
 
@@ -633,6 +696,77 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
         alert.runModalInFront()
+    }
+
+    // MARK: - Watch Folders
+
+    static let newVideosCategoryID = "mkvqp.newvideos"
+    static let reviewActionID = "mkvqp.review"
+
+    private func addWatchFolderViaPanel() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Watch"
+        panel.message = "New videos arriving in the chosen folders will be offered for review."
+        // Same dance as NSAlert.runModalInFront(): a Dock-less app must ask
+        // for activation or the panel opens behind everything.
+        if #available(macOS 14.0, *) { NSApp.activate() } else { NSApp.activate(ignoringOtherApps: true) }
+        panel.level = .floating
+        let response = panel.runModal()
+        if MPVLauncher.shared.isPlaying { MPVLauncher.shared.activateWindow() }
+        guard response == .OK else { return }
+        for url in panel.urls { watchFolderManager.addFolder(url) }
+        requestNotificationAuthorizationOnce()
+    }
+
+    private func requestNotificationAuthorizationOnce() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            if !granted {
+                NSLog("[MKVQuickPlay] Notifications declined — new-video batches appear in the menu bar only")
+            }
+        }
+    }
+
+    private func postNewVideosNotification(count: Int) {
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            guard settings.authorizationStatus == .authorized
+                    || settings.authorizationStatus == .provisional else { return }
+            let content = UNMutableNotificationContent()
+            content.title = count == 1 ? "1 new video to review" : "\(count) new videos to review"
+            content.body = "Click to step through the new arrivals, or use the menu bar icon."
+            content.categoryIdentifier = Self.newVideosCategoryID
+            // A fixed identifier coalesces: a growing batch replaces the one
+            // notification instead of stacking a new banner per settle.
+            center.add(UNNotificationRequest(identifier: Self.newVideosCategoryID,
+                                             content: content, trigger: nil))
+        }
+    }
+
+    /// Start a review session over everything the watch folders collected.
+    private func reviewPendingNewVideos() {
+        startBatchReview(watchFolderManager.takePendingReview())
+    }
+
+    /// A session over an explicit list of files (watch-folder arrivals).
+    /// The batch is the authority on membership, so the Finder-sort
+    /// refinement deliberately does not run.
+    private func startBatchReview(_ urls: [URL]) {
+        let videos = urls
+            .filter { finderSelectionManager.isVideoFile($0) && FileManager.default.fileExists(atPath: $0.path) }
+            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+        guard let first = videos.first else { return }
+        finderSelectionManager.resetPathCache()
+        sessionID += 1
+        playlistEpoch += 1
+        navigationPlaylist = videos
+        currentSelectionKeys = nil
+        playVideo(url: first, revealInFinder: true)
+        if currentPreviewURL != nil, videos.count > 1 {
+            showPositionOSD(for: first, in: videos)
+        }
     }
 
     // MARK: - Application Lifecycle
@@ -720,6 +854,118 @@ extension AppDelegate: SPUStandardUserDriverDelegate {
 
     func standardUserDriverWillFinishUpdateSession() {
         statusBarController.setUpdateAvailable(nil)
+    }
+}
+
+// MARK: - Watch-folder notifications
+
+extension AppDelegate: UNUserNotificationCenterDelegate {
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        if response.notification.request.content.categoryIdentifier == Self.newVideosCategoryID {
+            DispatchQueue.main.async { self.reviewPendingNewVideos() }
+        }
+        completionHandler()
+    }
+
+    /// Menu-bar apps are rarely "active", but show banners regardless —
+    /// there is no app window the user could be looking at instead.
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner])
+    }
+}
+
+// MARK: - Intent facade
+
+/// The programmatic surface the App Intents call into
+/// (MKVQuickPlayIntents.swift). Main-thread only by contract — every intent
+/// `perform()` is @MainActor. Intents never toggle-close a preview: every
+/// path here passes `allowToggle: false`.
+extension AppDelegate {
+
+    enum IntentNavigation {
+        case moved(String)
+        case atEnd
+        case atStart
+    }
+
+    private var hasActiveSession: Bool {
+        currentPreviewURL != nil && MPVLauncher.shared.isPlaying
+    }
+
+    /// The current Finder selection, over the same Apple Events channel as
+    /// the global hotkey (requires the Automation permission).
+    func intentFinderSelection() async throws -> [URL] {
+        try await withCheckedThrowingContinuation { continuation in
+            finderSelectionManager.fetchFinderSelection { urls, denied in
+                if let urls = urls {
+                    continuation.resume(returning: urls)
+                } else {
+                    continuation.resume(throwing: denied ? MKVQPIntentError.automationDenied
+                                                         : MKVQPIntentError.selectionUnavailable)
+                }
+            }
+        }
+    }
+
+    /// Preview `urls` (non-videos are filtered out). Returns the video count.
+    func intentPreview(urls: [URL]) throws -> Int {
+        let videos = urls.filter { finderSelectionManager.isVideoFile($0) }
+        guard !videos.isEmpty else { throw MKVQPIntentError.noVideosSelected }
+        handleServiceInvocation(with: videos, allowToggle: false)
+        guard currentPreviewURL != nil else { throw MKVQPIntentError.launchFailed }
+        return videos.count
+    }
+
+    func intentNavigate(forward: Bool) throws -> IntentNavigation {
+        guard hasActiveSession else { throw MKVQPIntentError.noActiveSession }
+        let moved = forward ? navigateToNextVideo() : navigateToPreviousVideo()
+        if moved, let now = currentPreviewURL { return .moved(now.lastPathComponent) }
+        return forward ? .atEnd : .atStart
+    }
+
+    /// Trash the playing file (bypasses the Delete-key safety on purpose —
+    /// see the onTrash wiring). Returns the trashed file's name.
+    func intentTrashCurrent() throws -> String {
+        guard hasActiveSession, let current = currentPreviewURL else {
+            throw MKVQPIntentError.noActiveSession
+        }
+        let name = current.lastPathComponent
+        guard trashCurrentAndAdvance() else { throw MKVQPIntentError.trashFailed }
+        return name
+    }
+
+    /// Returns whether the playing file is now tagged Purple.
+    func intentTogglePurpleTag() throws -> Bool {
+        guard hasActiveSession else { throw MKVQPIntentError.noActiveSession }
+        guard let tagged = togglePurpleTag() else { throw MKVQPIntentError.tagFailed }
+        return tagged
+    }
+
+    /// Returns whether a preview was open (and is now closed).
+    func intentStopPreview() -> Bool {
+        guard MPVLauncher.shared.isPlaying else { return false }
+        closePreview()
+        return true
+    }
+
+    /// Review every video in `folder`, in Finder's displayed order when a
+    /// window shows it (the whole single-file session pipeline is reused:
+    /// provisional alphabetical playlist + async Finder-sort refinement).
+    /// Returns the video count.
+    func intentReviewFolder(_ folder: URL) throws -> Int {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else { throw MKVQPIntentError.notAFolder }
+        let videos = finderSelectionManager.videoFiles(inDirectory: folder)
+        guard let first = videos.first else { throw MKVQPIntentError.noVideosInFolder }
+        handleServiceInvocation(with: [first], allowToggle: false)
+        guard currentPreviewURL != nil else { throw MKVQPIntentError.launchFailed }
+        return videos.count
     }
 }
 

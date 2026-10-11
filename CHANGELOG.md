@@ -2,6 +2,56 @@
 
 All notable changes to MKV QuickPlay are documented here.
 
+## [2.6.0]
+
+### Added
+- **Shortcuts, Siri & Spotlight support.** Seven actions — *Preview Videos*,
+  *Next/Previous Video*, *Move Current Video to Trash*, *Toggle Purple Tag*,
+  *Stop Preview* and *Review Folder* — now appear in the Shortcuts app, can be
+  invoked by Siri ("Next video in MKV QuickPlay"), and show up in Spotlight on
+  macOS 26+. The *Preview Videos* action accepts files from other shortcuts or
+  uses the current Finder selection when run bare.
+- **Finder Quick Action.** Build a one-action shortcut around *Preview Videos*
+  and enable it as a Quick Action to get MKV QuickPlay in Finder's right-click
+  Quick Actions menu — recipe in the README.
+- **Watch folders.** Point the app at your ingest folders (menu bar →
+  *Watch Folders* → *Add Folder…*) and newly arrived videos are offered for
+  review: a notification plus a count on the menu bar icon, one click to step
+  through just the new files. Files still being copied are never offered —
+  arrivals must settle first — and videos already in a folder when you add it
+  don't count as new. Works across volume unmounts, remounts and sleep.
+
+### Fixed
+- Opening a video **while the app wasn't running** (double-click / Open With)
+  crashed on launch; the files now open once the app finishes starting.
+- The keyboard shortcut silently did nothing on **large Finder selections**
+  (a few hundred files or more). Reading the selection is now ~30× faster,
+  handles 1000+ files in about a second, and explains itself if Finder ever
+  fails to answer instead of staying silent.
+- **Icon view** folders sorted by Date or Size navigated in exactly the
+  wrong direction (oldest/smallest first); they now match what Finder shows.
+- A trash keypress delivered during a session switch could act on the **next**
+  session's video; stale player events are now discarded.
+- Trashing or undoing immediately after a preview opened could be undone by
+  the background Finder-sort refresh (a trashed file reappearing in the
+  playlist); the stale refresh is now discarded.
+- Previewing a hidden (dot-named) or symlinked video left the arrows dead and
+  made Delete close the preview instead of advancing.
+- Alerts shown while a video was playing (About, How to Use, the shortcut
+  recorder) swallowed every subsequent player key until the mpv window was
+  clicked; key focus now returns to the player automatically.
+- Undoing a trash then pressing the shortcut again on the same selection
+  wrongly closed the preview.
+- Holding the arrow keys through very long culling runs could exhaust file
+  descriptors (stray cleanup watchdogs); file handles are now released
+  immediately.
+- A filename containing a newline, or containing "-1743", could corrupt
+  selection parsing or wrongly latch the "Automation denied" state.
+- Release tooling: a forgotten build-number bump used to publish an update
+  Sparkle would never offer; the release scripts now refuse it, reject
+  unknown flags, and verify the GitHub release exists before updating the
+  Homebrew cask or appcast.
+
 ## [2.5.1]
 
 ### Fixed
