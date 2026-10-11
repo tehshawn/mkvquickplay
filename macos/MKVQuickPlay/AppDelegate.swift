@@ -50,6 +50,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Monotonic id so async Finder-sort results never apply to a newer session.
     private var sessionID = 0
 
+    /// Bumped on every same-session playlist mutation (trash, undo), so the
+    /// async Finder-sort refinement — whose snapshot predates the mutation —
+    /// is discarded instead of resurrecting a trashed file or clobbering an
+    /// undo re-insert. `sessionID` alone can't catch these: it only changes
+    /// when a session starts or ends.
+    private var playlistEpoch = 0
+
     /// A file moved to the Trash, remembered so it can be restored with Undo.
     private struct TrashedItem {
         let original: URL
@@ -60,6 +67,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let sessionID: Int
     }
     private var undoStack: [TrashedItem] = []
+
+    /// URLs from application(_:open:) that arrived before launch finished —
+    /// on a cold launch-by-open AppKit delivers them *before*
+    /// applicationDidFinishLaunching, when the controllers are still nil.
+    private var pendingOpenURLs: [URL] = []
+    private var didFinishLaunching = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Initialize components
@@ -124,6 +137,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.togglePurpleTag()
         }
 
+        didFinishLaunching = true
+        // Replay any launch-by-open URLs buffered by application(_:open:) —
+        // everything above (controllers, mpv callbacks) is only now wired.
+        if !pendingOpenURLs.isEmpty {
+            let urls = pendingOpenURLs
+            pendingOpenURLs = []
+            handleServiceInvocation(with: urls, allowToggle: false)
+        }
+
         NSLog("[MKVQuickPlay] Ready - use Finder > Services > Preview with MKVQuickPlay (Cmd+Shift+V)")
     }
 
@@ -160,6 +182,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// preview the first press just opened.
     private var selectionFetchInFlight = false
     private var automationDeniedHintShown = false
+    private var selectionFetchFailedHintShown = false
 
     /// Hotkey pressed: preview whatever is selected in Finder right now.
     /// Unlike the Service, the hotkey carries no pasteboard, so the selection
@@ -179,6 +202,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 if denied && !self.automationDeniedHintShown {
                     self.automationDeniedHintShown = true
                     self.showAutomationDeniedHint()
+                } else if !denied && !self.selectionFetchFailedHintShown {
+                    // A transient failure used to stay quiet forever — the
+                    // hotkey just looked dead. Explain once per run.
+                    self.selectionFetchFailedHintShown = true
+                    self.showSelectionFetchFailedHint()
                 }
                 return
             }
@@ -210,6 +238,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
            let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation") {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    private func showSelectionFetchFailedHint() {
+        let alert = NSAlert()
+        alert.messageText = "Couldn't Read the Finder Selection"
+        alert.informativeText = """
+        Finder didn't answer in time. Try the shortcut again, or use right-click > Services > Preview with MKVQuickPlay, which works without querying Finder.
+        """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModalInFront()
     }
 
     // MARK: - Service Handling
@@ -249,8 +288,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             provisional = finderSelectionManager.sortedVideoFiles(from: selected)
             startURL = provisional.first ?? invoked
         } else {
-            let siblings = finderSelectionManager.getSiblingVideoFiles(for: invoked)
-            provisional = siblings.isEmpty ? [invoked] : siblings
+            // A hidden or symlinked video is excluded from its own folder
+            // listing — without it in the playlist, navigation finds no
+            // index for the playing file (arrows dead) and trash-advance
+            // sees no successor (Delete closes the whole preview).
+            var siblings = finderSelectionManager.getSiblingVideoFiles(for: invoked)
+            if finderSelectionManager.index(of: invoked, in: siblings) == nil {
+                let name = invoked.lastPathComponent
+                let at = siblings.firstIndex {
+                    $0.lastPathComponent.localizedStandardCompare(name) == .orderedDescending
+                } ?? siblings.count
+                siblings.insert(invoked, at: at)
+            }
+            provisional = siblings
             startURL = invoked
         }
 
@@ -264,11 +314,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // …then refine to Finder's displayed sort order off the main thread,
         // so a slow Finder query (or the one-time Automation consent prompt)
         // never delays the video or stalls keyboard navigation.
+        let epoch = playlistEpoch
         finderSelectionManager.orderedVideoFiles(inFolderOf: invoked) { [weak self] folderOrder in
             guard let self = self, self.sessionID == session else { return }
+            // The playlist mutated since this refinement was captured (a
+            // trash or an undo) — applying the pre-mutation snapshot would
+            // resurrect the trashed file or wipe out the undo re-insert.
+            guard self.playlistEpoch == epoch else { return }
             guard let folderOrder = folderOrder, !folderOrder.isEmpty else { return }
+            let key = self.finderSelectionManager.normalizedPath
             if selected.count > 1 {
-                let key = self.finderSelectionManager.normalizedPath
                 // The folder order only covers the invoked file's folder; a
                 // selection spanning folders (search results, a tag view)
                 // keeps its provisional order rather than shrinking to the
@@ -281,8 +336,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 // one of them may be the file that is playing.
                 let covered = Set(scoped.map(key))
                 self.navigationPlaylist = scoped + provisional.filter { !covered.contains(key($0)) }
-            } else {
+            } else if folderOrder.contains(where: { key($0) == key(invoked) }) {
                 self.navigationPlaylist = folderOrder
+            } else {
+                // Same hidden/symlink guard as the provisional list above.
+                self.navigationPlaylist = folderOrder + [invoked]
             }
         }
     }
@@ -410,6 +468,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             remaining.removeAll { finderSelectionManager.normalizedPath($0) == trashedKey }
             navigationPlaylist = remaining.isEmpty ? nil : remaining
         }
+        playlistEpoch += 1 // invalidate any in-flight sort refinement
 
         if let successor,
            finderSelectionManager.normalizedPath(successor) != finderSelectionManager.normalizedPath(current),
@@ -493,10 +552,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             navigationPlaylist = nil
         }
 
+        playlistEpoch += 1 // invalidate any in-flight sort refinement
+
         // Reopen the restored file (relaunching mpv here is intentional —
         // undo should work even after the preview was closed). The OSD is
         // queued until the player's control channel is up if it had to relaunch.
         playVideo(url: entry.original, revealInFinder: true)
+        // The restored file replaced whatever the invoking selection
+        // described — a later re-invocation on that unchanged selection
+        // must not read as a "toggle closed" (same invariant as
+        // navigate(to:) and trashCurrentAndAdvance()).
+        currentSelectionKeys = nil
         MPVLauncher.shared.showText("Restored\n\(entry.original.lastPathComponent)")
     }
 
@@ -592,6 +658,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Route through the same path as the Service so Open With gets a
         // proper navigation playlist — but an explicit "open" never toggles
         // the preview closed; it surfaces the player instead.
+        //
+        // On a cold launch-by-open this arrives *before*
+        // applicationDidFinishLaunching (documented AppKit ordering), when
+        // the controllers are still nil and the mpv callbacks unwired —
+        // buffer the URLs and let applicationDidFinishLaunching replay them.
+        guard didFinishLaunching else {
+            pendingOpenURLs.append(contentsOf: urls)
+            return
+        }
         handleServiceInvocation(with: urls, allowToggle: false)
     }
 

@@ -28,6 +28,30 @@ if [[ ! -f "$ZIP" ]]; then
   exit 1
 fi
 
+# Never regress or silently repeat the published build number: Sparkle
+# compares CFBundleVersion, and an appcast whose number didn't move is a
+# dead update that looks exactly like a successful release. Equality is
+# allowed only for a re-release of the same version (--force rebuilds need
+# a fresh signature for the re-signed zip).
+if [[ -f "$APPCAST" ]]; then
+  OLD_BUILD="$(sed -nE 's|.*<sparkle:version>([0-9]+)</sparkle:version>.*|\1|p' "$APPCAST" | head -1)"
+  OLD_VERSION="$(sed -nE 's|.*<sparkle:shortVersionString>([^<]+)</sparkle:shortVersionString>.*|\1|p' "$APPCAST" | head -1)"
+  if [[ -n "$OLD_BUILD" ]]; then
+    if [[ "$BUILD_NUM" -lt "$OLD_BUILD" ]] ||
+       { [[ "$BUILD_NUM" -eq "$OLD_BUILD" ]] && [[ "$VERSION" != "$OLD_VERSION" ]]; }; then
+      echo "ERROR: CFBundleVersion ($BUILD_NUM for $VERSION) must exceed the published appcast's ($OLD_BUILD for $OLD_VERSION) — bump it in Info.plist." >&2
+      exit 1
+    fi
+  fi
+fi
+
+# Standalone-run safety: the enclosure URL must point at a release that
+# actually exists, or every update check 404s.
+if ! gh release view "$TAG" --repo "$REPO_SLUG" >/dev/null 2>&1; then
+  echo "ERROR: GitHub release $TAG does not exist — publish it first (scripts/release.sh)." >&2
+  exit 1
+fi
+
 # Newest DerivedData first; `|| true` so a missed glob doesn't abort under set -e.
 SPARKLE_BIN="$(ls -dt "$HOME"/Library/Developer/Xcode/DerivedData/$SCHEME-*/SourcePackages/artifacts/sparkle/Sparkle/bin 2>/dev/null | head -1 || true)"
 if [[ -z "$SPARKLE_BIN" || ! -x "$SPARKLE_BIN/sign_update" ]]; then

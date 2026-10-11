@@ -42,7 +42,10 @@ throughout for that reason. Build requires **Xcode 26+**.
   sync with the `client-message` switch in `processBuffer()`:
   `mkvqp-next` (↓), `mkvqp-prev` (↑), `mkvqp-trash` (BS/DEL),
   `mkvqp-undo` (⌘Z), `mkvqp-tag` (P). Adding a script-message without a
-  `processBuffer` case silently drops it.
+  `processBuffer` case silently drops it. Client-messages are
+  **generation-checked again at delivery time on main** — a keypress event
+  queued behind a main-thread stall must not act on a successor session's
+  file (a late trash would delete the wrong video).
   *History:* the file used to be written once into `$TMPDIR`, which macOS purges
   of files untouched for 3 days — after a few days in the menu bar every player
   opened with **no keys at all**. The IPC re-install is the real safety net.
@@ -69,9 +72,16 @@ throughout for that reason. Build requires **Xcode 26+**.
 ### Finder integration (`FinderSelectionManager.swift`, `AppDelegate.swift`)
 - **Always shell out to `/usr/bin/osascript`; never `NSAppleScript`** (it is
   main-thread bound and blocks unboundedly on the TCC consent prompt). Three
-  safety mechanics are load-bearing: in-script `with timeout of 3 seconds`;
-  **both pipes drained before `waitUntilExit()`** (a 64 KB buffer fills on a
-  large selection and deadlocks); a 30 s SIGTERM → +2 s SIGKILL watchdog.
+  safety mechanics are load-bearing: in-script `with timeout` (3 s for
+  sort/reveal, **15 s for the selection fetch**); **both pipes drained before
+  `waitUntilExit()`** (a 64 KB buffer fills on a large selection and
+  deadlocks); a 30 s SIGTERM → +2 s SIGKILL watchdog whose work item
+  **weak-captures the Process** (a strong capture parked every exited child's
+  pipe fds for the full 30 s — fd exhaustion during long culling runs).
+- The selection fetch is **one `selection as alias list` Apple Event** with
+  local alias→path coercion, paths joined by ASCII RS (0x1E). Reverting to a
+  per-item `get selection` loop times out from ~500 selected files, and a
+  newline join shreds any filename containing `\n`.
 - **Reveal without activation.** Following the playing file uses Finder's
   `reveal` with **no** `activate`, so mpv keeps keyboard focus. The old
   `activateFileViewerSelecting` + refocus dance is only a fallback (failures
@@ -87,16 +97,27 @@ throughout for that reason. Build requires **Xcode 26+**.
   the permission in System Settings recovers on the next preview, no relaunch.
 - **Sort emulation fallback matrix.** Finder's order is mirrored only when an
   open window's `target` is that exact folder, and only for list view
-  (name/kind/modified/created/size) and icon view (same five). Everything else —
+  (name/kind/modified/created/size) and icon view (same five — but icon-view
+  date/size arrangements are emitted `reversed`: Finder renders them
+  newest/largest-first and exposes no direction control anywhere). Everything else —
   Desktop, search results, Recents, Tags, smart folders, no window,
   **column view, gallery view**, unmapped columns (Date Added…) — falls back to
   alphabetical. Column view *succeeds* and returns the default, so "sort is
   wrong" there is not a script failure. `reversed` applies to the primary key
   only; the filename tiebreak stays ascending.
 - Playlist: playback starts on a provisional alphabetical list, refined
-  asynchronously under a `sessionID` guard (`clearPreviewState()` bumps it, so a
-  late result can't revive a closed preview). Multi-file selections are refined
-  only when every file shares the invoked file's folder.
+  asynchronously under `sessionID` **and `playlistEpoch`** guards
+  (`clearPreviewState()` bumps the former; trash/undo bump the latter, so a
+  late refinement can't resurrect a trashed file or clobber an undo
+  re-insert). Multi-file selections are refined only when every file shares
+  the invoked file's folder. The invoked file is force-inserted into its own
+  playlist (provisional *and* refined) — hidden/symlinked videos are missing
+  from folder listings, and a playlist without the playing file kills
+  navigation and makes Delete close the preview.
+- `application(_:open:)` arrives **before** `applicationDidFinishLaunching`
+  on a cold launch-by-open (documented AppKit ordering) — URLs are buffered
+  in `pendingOpenURLs` and replayed after launch wiring. Calling into the
+  controllers from it directly crashes the nil IUOs.
 - Trash/undo: Delete is a silent no-op unless `mkvqp.trashEnabled` is on
   (default off). Undo re-inserts at the remembered index only while
   `entry.sessionID == sessionID`. The P key writes tags via
@@ -107,7 +128,9 @@ throughout for that reason. Build requires **Xcode 26+**.
 - **Every NSAlert must go through `NSAlert.runModalInFront()`** (activate +
   `window.level = .floating`). LSUIElement apps are never frontmost, so a bare
   `runModal()` can open behind other windows with no key focus — the app just
-  looks hung.
+  looks hung. After `runModal()` it **hands key focus back to the mpv window**
+  when one is playing — activating ourselves otherwise leaves a windowless
+  active app swallowing every player key.
 - **KeyboardShortcuts is MainActor-isolated but the target is `SWIFT_VERSION = 5.0`**,
   so the compiler will *not* diagnose a call from a background queue — the only
   enforcement is a runtime trap. Reads go through
@@ -162,7 +185,12 @@ testing) and `--force` (allows re-releasing an existing tag). ⚠️ `--force`
 uploads new binaries but leaves the tag pointing at the **old** commit.
 
 Publish-path guards, in order: clean tree → HEAD pushed to upstream → tag does
-not already exist.
+not already exist → CFBundleVersion exceeds the published appcast's (the
+forgotten-build-bump release would publish a dead update; `--force` skips the
+version guards for same-version re-releases). Unknown flags abort.
+`update-appcast.sh` and `update-cask.sh` each refuse to run standalone for a
+GitHub release that doesn't exist, and the appcast guard is version-aware
+(equal build allowed only when re-signing the same version).
 
 After upload the pipeline runs `scripts/update-cask.sh` then
 `scripts/update-appcast.sh`, and **both are failure-tolerant** — `release.sh`

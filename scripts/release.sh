@@ -31,6 +31,11 @@ for arg in "$@"; do
   case "$arg" in
     --no-publish) PUBLISH=0 ;;
     --force) FORCE=1 ;;
+    *)
+      # A typo'd flag must not silently run a full public release.
+      echo "ERROR: unknown argument '$arg' (valid: --no-publish, --force)" >&2
+      exit 1
+      ;;
   esac
 done
 
@@ -67,6 +72,21 @@ if [[ "$PUBLISH" -eq 1 ]]; then
   if [[ "$FORCE" -ne 1 ]] && gh release view "$TAG" --repo "$REPO_SLUG" >/dev/null 2>&1; then
     echo "ERROR: release $TAG already exists — bump CFBundleShortVersionString in Info.plist, or pass --force to overwrite." >&2
     exit 1
+  fi
+  # Sparkle compares CFBundleVersion (build numbers), not marketing versions:
+  # a release whose build number didn't move past the published appcast's is
+  # never offered as an update, and the appcast rewrite leaves no trace of
+  # the old number to notice it by. Catch the forgotten second bump here,
+  # before the build/notarize wait. (--force skips this for same-version
+  # re-releases; update-appcast.sh has its own version-aware guard.)
+  BUILD_NUM="$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$PLIST")"
+  APPCAST="$ROOT/docs/appcast.xml"
+  if [[ "$FORCE" -ne 1 && -f "$APPCAST" ]]; then
+    OLD_BUILD="$(sed -nE 's|.*<sparkle:version>([0-9]+)</sparkle:version>.*|\1|p' "$APPCAST" | head -1)"
+    if [[ -n "$OLD_BUILD" && "$BUILD_NUM" -le "$OLD_BUILD" ]]; then
+      echo "ERROR: CFBundleVersion ($BUILD_NUM) must exceed the published appcast's ($OLD_BUILD) — Sparkle users would never be offered $TAG. Bump CFBundleVersion in Info.plist." >&2
+      exit 1
+    fi
   fi
 fi
 

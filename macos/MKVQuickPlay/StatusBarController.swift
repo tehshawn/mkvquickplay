@@ -343,6 +343,15 @@ extension NSAlert {
             NSApp.activate(ignoringOtherApps: true)
         }
         window.level = .floating
-        return runModal()
+        let response = runModal()
+        // Activating ourselves to host the alert took key focus away from
+        // the mpv window — and a Dock-less app with zero windows would keep
+        // it, swallowing every subsequent player key until the user clicks
+        // the player. Hand focus back while we are still the active app
+        // (the one situation where yieldActivation is guaranteed to count).
+        if MPVLauncher.shared.isPlaying {
+            MPVLauncher.shared.activateWindow()
+        }
+        return response
     }
 }

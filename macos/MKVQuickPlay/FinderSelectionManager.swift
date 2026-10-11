@@ -130,18 +130,27 @@ class FinderSelectionManager {
     /// failed (never conflate that with an empty selection); `automationDenied`
     /// reports whether *this* query failed because Automation was declined.
     func fetchFinderSelection(completion: @escaping (_ urls: [URL]?, _ automationDenied: Bool) -> Void) {
+        // One `selection as alias list` Apple Event, then local (in-process)
+        // alias→path coercions. The old shape — `get selection` plus a
+        // per-item `as alias` round-trip — scaled so badly that a 1000-file
+        // selection blew the in-script timeout every time (measured), leaving
+        // the hotkey reproducibly dead on exactly the folders worth culling;
+        // this form returns 1200 items in about a second (also measured).
+        // 15 s of headroom for slower machines and network volumes.
+        //
+        // Paths are joined with an ASCII record separator (0x1E), not a
+        // newline: a legal APFS filename can contain "\n", which made the
+        // old parser shred that path into two bogus entries.
         let source = """
-        with timeout of 3 seconds
-            tell application "Finder"
-                set out to ""
-                repeat with itm in (get selection)
-                    try
-                        set out to out & (POSIX path of (itm as alias)) & linefeed
-                    end try
-                end repeat
-                return out
-            end tell
+        set rs to character id 30
+        with timeout of 15 seconds
+            tell application "Finder" to set sel to selection as alias list
         end timeout
+        set out to ""
+        repeat with a in sel
+            set out to out & (POSIX path of a) & rs
+        end repeat
+        return out
         """
         queryQueue.async { [weak self] in
             guard let self = self else { return }
@@ -149,7 +158,10 @@ class FinderSelectionManager {
             let denied: Bool
             switch self.runAppleScript(source) {
             case .output(let text):
-                urls = text.split(separator: "\n").map { URL(fileURLWithPath: String($0)) }
+                urls = text.split(separator: "\u{1E}")
+                    .map(String.init)
+                    .filter { $0.hasPrefix("/") } // drops osascript's trailing newline
+                    .map { URL(fileURLWithPath: $0) }
                 denied = false
             case .denied:
                 urls = nil
@@ -296,6 +308,11 @@ class FinderSelectionManager {
                 else if theView is icon view then
                     set known to false
                     set arr to arrangement of icon view options of theWindow
+                    -- Icon view has no direction control anywhere (GUI,
+                    -- scripting, .DS_Store): Finder hardcodes newest-first /
+                    -- largest-first for date and size arrangements, so emit
+                    -- the direction it actually renders. Name and kind stay
+                    -- ascending.
                     if arr is arranged by name then
                         set sortKey to "name"
                         set known to true
@@ -304,12 +321,15 @@ class FinderSelectionManager {
                         set known to true
                     else if arr is arranged by modification date then
                         set sortKey to "modified"
+                        set sortDir to "reversed"
                         set known to true
                     else if arr is arranged by creation date then
                         set sortKey to "created"
+                        set sortDir to "reversed"
                         set known to true
                     else if arr is arranged by size then
                         set sortKey to "size"
+                        set sortDir to "reversed"
                         set known to true
                     end if
                     if not known then return ""
@@ -383,10 +403,20 @@ class FinderSelectionManager {
         // consent prompt, which blocks the child until the user answers.
         // Escalate to SIGKILL so a child that ignores SIGTERM can't wedge the
         // queue (and with it the hotkey) for the rest of the session.
-        let killer = DispatchWorkItem {
-            if process.isRunning { process.terminate() }
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) {
-                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        // `[weak process]`: cancel() only flags the work item — dispatch
+        // keeps it (and everything it strongly captures) enqueued until the
+        // 30 s deadline. A strong capture parked every *completed*
+        // osascript's Process object and pipe fds for a full 30 s; at one
+        // reveal per arrow keypress, a long culling run crossed the fd soft
+        // limit. Safe: while the child runs, this frame's `process` keeps it
+        // alive for the watchdog to find.
+        let killer = DispatchWorkItem { [weak process] in
+            guard let process = process, process.isRunning else { return }
+            process.terminate()
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) { [weak process] in
+                if let process = process, process.isRunning {
+                    kill(process.processIdentifier, SIGKILL)
+                }
             }
         }
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 30, execute: killer)
@@ -400,12 +430,20 @@ class FinderSelectionManager {
         killer.cancel()
         let outData = out.data()
         let errData = err.data()
+        // Deterministically release the parent-side read fds — PipeDrain
+        // reads to EOF, but FileHandle only closes its fd on dealloc.
+        try? stdout.fileHandleForReading.close()
+        try? stderr.fileHandleForReading.close()
 
         if process.terminationStatus != 0 {
             let message = String(data: errData, encoding: .utf8) ?? ""
             // -1743 = errAEEventNotPermitted: the user declined Automation
             // access. Remember it so we stop querying until a query succeeds.
-            if message.contains("-1743") {
+            // Anchored to the trailing error code: Finder's error text
+            // interpolates the target path, so a bare substring match
+            // latched "denied" on any *filename* containing "-1743"
+            // (e.g. IMG-17431.mkv failing with a -1700 coercion error).
+            if message.range(of: #"\(-1743\)\s*$"#, options: .regularExpression) != nil {
                 setAutomationDenied(true)
                 NSLog("[FinderSelectionManager] Automation permission denied — using alphabetical order")
                 return .denied

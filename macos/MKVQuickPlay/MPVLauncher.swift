@@ -614,7 +614,7 @@ final class MPVLauncher {
                 return
             }
             self.readBuffer.append(contentsOf: buf[0..<n])
-            self.processBuffer()
+            self.processBuffer(generation: gen)
         }
         source.setCancelHandler {
             close(fd)
@@ -624,7 +624,8 @@ final class MPVLauncher {
     }
 
     /// Parse newline-delimited JSON IPC messages and dispatch navigation events.
-    private func processBuffer() {
+    /// `gen` is the generation of the channel these bytes arrived on.
+    private func processBuffer(generation gen: Int) {
         while let newlineIndex = readBuffer.firstIndex(of: 0x0A) {
             let lineData = readBuffer.subdata(in: readBuffer.startIndex..<newlineIndex)
             readBuffer.removeSubrange(readBuffer.startIndex...newlineIndex)
@@ -638,16 +639,22 @@ final class MPVLauncher {
             switch event {
             case "client-message":
                 guard let name = (obj["args"] as? [String])?.first else { continue }
-                if name == "mkvqp-next" {
-                    DispatchQueue.main.async { [weak self] in self?.onNavigate?(1) }
-                } else if name == "mkvqp-prev" {
-                    DispatchQueue.main.async { [weak self] in self?.onNavigate?(-1) }
-                } else if name == "mkvqp-trash" {
-                    DispatchQueue.main.async { [weak self] in self?.onTrash?() }
-                } else if name == "mkvqp-undo" {
-                    DispatchQueue.main.async { [weak self] in self?.onUndo?() }
-                } else if name == "mkvqp-tag" {
-                    DispatchQueue.main.async { [weak self] in self?.onTagToggle?() }
+                // Re-check the generation at delivery time, on main: a stale
+                // source draining buffered bytes after a session switch — or
+                // a keypress queued behind a long main-thread stall (the
+                // synchronous folder listing a new invocation does) — must
+                // never act on the *successor* session's file. A late trash
+                // keypress would delete a video the user never aimed it at.
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self, self.currentGeneration == gen else { return }
+                    switch name {
+                    case "mkvqp-next": self.onNavigate?(1)
+                    case "mkvqp-prev": self.onNavigate?(-1)
+                    case "mkvqp-trash": self.onTrash?()
+                    case "mkvqp-undo": self.onUndo?()
+                    case "mkvqp-tag": self.onTagToggle?()
+                    default: break
+                    }
                 }
             case "property-change":
                 handlePropertyChange(obj)
@@ -833,8 +840,16 @@ final class MPVLauncher {
         presentAlert(title: "Failed to Launch mpv", message: error.localizedDescription)
     }
 
+    /// Main-thread confined: suppress stacked alerts while one is already on
+    /// screen — every re-invocation without mpv installed would otherwise
+    /// nest another modal session behind the first.
+    private var alertShowing = false
+
     private func presentAlert(title: String, message: String) {
         DispatchQueue.main.async {
+            guard !self.alertShowing else { return }
+            self.alertShowing = true
+            defer { self.alertShowing = false }
             let alert = NSAlert()
             alert.messageText = title
             alert.informativeText = message

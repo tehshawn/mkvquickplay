@@ -21,6 +21,13 @@ if [[ ! -f "$ZIP" ]]; then
 fi
 SHA="$(shasum -a 256 "$ZIP" | awk '{print $1}')"
 
+# Standalone-run safety: never point brew users at a release that isn't
+# actually published (the cask URL would 404 for everyone).
+if ! gh release view "v$VERSION" --repo "tehshawn/mkvquickplay" >/dev/null 2>&1; then
+  echo "ERROR: GitHub release v$VERSION does not exist — publish it first (scripts/release.sh)." >&2
+  exit 1
+fi
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
